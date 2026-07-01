@@ -1,0 +1,10 @@
+{
+  "name": "@companion/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@companion/types": "*",
+    "socket.io-client": "^4.8.1"
+  }
+}

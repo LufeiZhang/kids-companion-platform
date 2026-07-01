@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  student
+  teacher
+  admin
+}
+
+enum RoomStatus {
+  scheduled
+  active
+  ended
+}
+
+enum CoursewareType {
+  image
+  pdf
+}
+
+model User {
+  id             String            @id @default(cuid())
+  name           String
+  email          String            @unique
+  phone          String?           @unique
+  passwordHash   String
+  role           UserRole
+  avatar         String?
+  studentProfile StudentProfile?
+  teacherProfile TeacherProfile?
+  taughtRooms    ClassRoom[]       @relation("TeacherRooms")
+  roomMemberships ClassRoomStudent[]
+  courseware     Courseware[]
+  whiteboardEvents WhiteboardEvent[]
+  sentSignals    SignalLog[]       @relation("SignalSender")
+  receivedSignals SignalLog[]      @relation("SignalTarget")
+  rewardsGiven   RewardLog[]       @relation("RewardTeacher")
+  rewardsReceived RewardLog[]      @relation("RewardStudent")
+  auditLogs      AdminAuditLog[]   @relation("AdminActor")
+  managedGroups  StudentGroup[]    @relation("GroupTeacher")
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+model StudentProfile {
+  id            String        @id @default(cuid())
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  age           Int?
+  grade         String?
+  parentName    String?
+  parentContact String?
+  groupId       String?
+  group         StudentGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+}
+
+model TeacherProfile {
+  id       String   @id @default(cuid())
+  userId   String   @unique
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bio      String?
+  subjects String[]
+}
+
+model StudentGroup {
+  id          String           @id @default(cuid())
+  name        String
+  teacherId   String
+  teacher     User             @relation("GroupTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+  description String?
+  students    StudentProfile[]
+  createdAt   DateTime         @default(now())
+}
+
+model ClassRoom {
+  id          String             @id @default(cuid())
+  title       String
+  teacherId   String
+  teacher     User               @relation("TeacherRooms", fields: [teacherId], references: [id])
+  students    ClassRoomStudent[]
+  status      RoomStatus         @default(scheduled)
+  startedAt   DateTime?
+  endedAt     DateTime?
+  coursewareId String?
+  currentPage Int                @default(1)
+  whiteboardEvents WhiteboardEvent[]
+  signals     SignalLog[]
+  rewards     RewardLog[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model ClassRoomStudent {
+  roomId    String
+  studentId String
+  room      ClassRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  student   User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  joinedAt  DateTime?
+  @@id([roomId, studentId])
+}
+
+model Courseware {
+  id        String         @id @default(cuid())
+  title     String
+  type      CoursewareType
+  fileUrl   String
+  ownerId   String
+  owner     User           @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  createdAt DateTime       @default(now())
+}
+
+model WhiteboardEvent {
+  id        String    @id @default(cuid())
+  roomId    String
+  room      ClassRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  eventType String
+  payload   Json
+  createdAt DateTime  @default(now())
+}
+
+model SignalLog {
+  id           String    @id @default(cuid())
+  msgId        String    @unique
+  roomId       String
+  room         ClassRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  fromUserId   String
+  fromUser     User      @relation("SignalSender", fields: [fromUserId], references: [id])
+  targetUserId String?
+  targetUser   User?     @relation("SignalTarget", fields: [targetUserId], references: [id])
+  msgType      String
+  action       String
+  payload      Json
+  ackStatus    String
+  createdAt    DateTime  @default(now())
+}
+
+model RewardLog {
+  id         String    @id @default(cuid())
+  roomId     String
+  room       ClassRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  teacherId  String
+  teacher    User      @relation("RewardTeacher", fields: [teacherId], references: [id])
+  studentId  String
+  student    User      @relation("RewardStudent", fields: [studentId], references: [id])
+  rewardType String
+  message    String?
+  createdAt  DateTime  @default(now())
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  actor      User     @relation("AdminActor", fields: [actorId], references: [id])
+  action     String
+  targetType String
+  targetId   String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+}

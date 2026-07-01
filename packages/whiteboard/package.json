@@ -1,0 +1,16 @@
+{
+  "name": "@companion/whiteboard",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": "./src/index.tsx",
+  "dependencies": {
+    "@companion/types": "*"
+  },
+  "peerDependencies": {
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "react": "^18.3.1"
+  }
+}

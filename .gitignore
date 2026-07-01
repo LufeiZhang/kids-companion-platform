@@ -1,0 +1,10 @@
+node_modules
+dist
+.pnpm-store
+*.tsbuildinfo
+.env
+*.log
+server/uploads/*
+!server/uploads/.gitkeep
+coverage
+.DS_Store
