@@ -92,6 +92,8 @@ function Dashboard() {
   const [title, setTitle] = useState("快乐阅读伴学课");
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
+  const [modalError, setModalError] = useState("");
+  const [creating, setCreating] = useState(false);
   const load = async () => {
     try {
       const [studentData, roomData, groupData] = await Promise.all([
@@ -108,23 +110,49 @@ function Dashboard() {
   };
   useEffect(() => { void load(); }, []);
 
+  const openCreate = (student?: User) => {
+    setModalError("");
+    if (student) {
+      setSelected([student.id]);
+      setTitle(`${student.name}的伴学课`);
+    } else {
+      setSelected([]);
+      setTitle("快乐阅读伴学课");
+    }
+    setShowCreate(true);
+  };
+
   const createRoom = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (creating) return;
+    const roomTitle = title.trim();
+    if (!roomTitle) {
+      setModalError("请填写课堂名称");
+      return;
+    }
+    if (!selected.length) {
+      setModalError("请至少选择一名学生");
+      return;
+    }
+    setCreating(true);
+    setModalError("");
     try {
       const room = await api<Classroom>("/api/rooms", {
         method: "POST",
-        body: JSON.stringify({ title, studentIds: selected })
+        body: JSON.stringify({ title: roomTitle, studentIds: selected })
       });
-      location.href = appUrl(`classroom/${room.id}`);
+      window.location.assign(appUrl(`classroom/${room.id}`));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "创建失败");
+      setModalError(reason instanceof Error ? reason.message : "创建失败，请稍后再试");
+    } finally {
+      setCreating(false);
     }
   };
 
   return (
     <Shell active={activeTab} onNavigate={setActiveTab}>
       {activeTab === "首页" && <>
-      <section className="welcome-strip"><div><small>WED · 今日教学</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>你今天有 {rooms.filter((room) => room.status !== "ended").length} 节待进行课堂，{students.length} 位学生等待陪伴。</p></div><Button onClick={() => setShowCreate(true)}>＋ 创建课堂</Button></section>
+      <section className="welcome-strip"><div><small>WED · 今日教学</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>你今天有 {rooms.filter((room) => room.status !== "ended").length} 节待进行课堂，{students.length} 位学生等待陪伴。</p></div><Button onClick={() => openCreate()}>＋ 创建课堂</Button></section>
       {error && <p className="error">{error}</p>}
       <div className="stat-grid">
         <Card><span className="stat-icon blue">◷</span><div><small>今日课程</small><strong>{rooms.length}</strong><p>待进行 {rooms.filter((room) => room.status !== "ended").length} 节</p></div></Card>
@@ -133,7 +161,7 @@ function Dashboard() {
       </div>
       <div className="dashboard-grid">
         <Card className="schedule">
-          <div className="section-title"><div><h3>课堂列表</h3><p>开始或继续你的伴学课堂</p></div><button onClick={() => setShowCreate(true)}>创建新课堂</button></div>
+          <div className="section-title"><div><h3>课堂列表</h3><p>开始或继续你的伴学课堂</p></div><button onClick={() => openCreate()}>创建新课堂</button></div>
           {!rooms.length ? <EmptyState icon="📘" title="还没有课堂"><p>创建第一节伴学课吧</p></EmptyState> : rooms.map((room) => (
             <div className="room-row" key={room.id}>
               <span className={`room-status ${room.status}`}>{room.status === "active" ? "进行中" : room.status === "ended" ? "已结束" : "待开始"}</span>
@@ -149,11 +177,11 @@ function Dashboard() {
       </div>
       </>}
       {activeTab === "我的学生" && <section className="teacher-subpage">
-        <div className="page-heading"><div><small>MY STUDENTS</small><h1>我的学生</h1><p>查看已分配学生，并快速发起一节伴学课堂。</p></div><Button onClick={() => setShowCreate(true)}>＋ 创建课堂</Button></div>
+        <div className="page-heading"><div><small>MY STUDENTS</small><h1>我的学生</h1><p>查看已分配学生，并快速发起一节伴学课堂。</p></div><Button onClick={() => openCreate()}>＋ 创建课堂</Button></div>
         <div className="student-management-grid">
           {students.map((student, index) => {
             const group = groups.find((item) => item.students?.some(({ user }) => user.id === student.id));
-            return <Card className="management-card" key={student.id}><div className={`management-avatar a${index % 3}`}>{student.name.slice(0, 1)}</div><div className="management-info"><h3>{student.name}</h3><p>{student.email}</p><span>{group ? `◫ ${group.name}` : "暂未分组"}</span></div><button onClick={() => { setSelected([student.id]); setTitle(`${student.name}的伴学课`); setShowCreate(true); }}>邀请上课 →</button></Card>;
+            return <Card className="management-card" key={student.id}><div className={`management-avatar a${index % 3}`}>{student.name.slice(0, 1)}</div><div className="management-info"><h3>{student.name}</h3><p>{student.email}</p><span>{group ? `◫ ${group.name}` : "暂未分组"}</span></div><button onClick={() => openCreate(student)}>邀请上课 →</button></Card>;
           })}
           {!students.length && <Card className="subpage-empty">暂时没有已分配学生，请联系管理员分配。</Card>}
         </div>
@@ -173,7 +201,7 @@ function Dashboard() {
           {!rooms.length && <div className="subpage-empty">还没有课堂记录。</div>}
         </Card>
       </section>}
-      {showCreate && <div className="modal-backdrop"><form className="modal" onSubmit={createRoom}><button type="button" className="modal-close" onClick={() => setShowCreate(false)}>×</button><small>NEW CLASSROOM</small><h2>创建伴学课堂</h2><label>课堂名称<Input value={title} onChange={(event) => setTitle(event.target.value)} /></label><fieldset><legend>邀请学生</legend>{students.map((student) => <label className="check-row" key={student.id}><input type="checkbox" checked={selected.includes(student.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span>{student.name}</span><small>{student.email}</small></label>)}</fieldset><Button>创建并进入课堂</Button></form></div>}
+      {showCreate && <div className="modal-backdrop"><form className="modal" onSubmit={createRoom}><button type="button" className="modal-close" disabled={creating} onClick={() => setShowCreate(false)}>×</button><small>NEW CLASSROOM</small><h2>创建伴学课堂</h2><label>课堂名称<Input value={title} disabled={creating} onChange={(event) => setTitle(event.target.value)} /></label><fieldset disabled={creating}><legend>邀请学生 · 已选 {selected.length} 人</legend>{students.map((student) => <label className="check-row" key={student.id}><input type="checkbox" checked={selected.includes(student.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span>{student.name}</span><small>{student.email}</small></label>)}</fieldset>{modalError && <p className="modal-error" role="alert">⚠ {modalError}</p>}<Button type="submit" disabled={creating}>{creating ? "正在创建课堂…" : "创建并进入课堂"}</Button></form></div>}
     </Shell>
   );
 }
