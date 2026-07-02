@@ -15,13 +15,21 @@ import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
-type TeacherTab = "首页" | "我的学生" | "学生分组" | "课堂记录";
+type TeacherTab = "首页" | "我的学生" | "学生分组" | "课堂记录" | "奖励记录";
 interface TeacherGroup {
   id: string;
   name: string;
   teacherId: string;
   description?: string;
   students?: Array<{ user: Pick<User, "id" | "name" | "email"> }>;
+}
+interface TeacherReward {
+  id: string;
+  rewardType: string;
+  message?: string;
+  createdAt: string;
+  student: { name: string };
+  room: { title: string };
 }
 
 function Login() {
@@ -69,8 +77,8 @@ function Shell({ children, active, onNavigate }: { children: React.ReactNode; ac
       <aside className="sidebar">
         <div className="logo"><span>伴</span><div><b>伴学空间</b><small>教师工作台</small></div></div>
         <nav>
-          {(["首页", "我的学生", "学生分组", "课堂记录"] as TeacherTab[]).map((item) => (
-            <button key={item} className={active === item ? "active" : ""} onClick={() => onNavigate(item)}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : "◷"} {item}</button>
+          {(["首页", "我的学生", "学生分组", "课堂记录", "奖励记录"] as TeacherTab[]).map((item) => (
+            <button key={item} className={active === item ? "active" : ""} onClick={() => onNavigate(item)}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : item === "课堂记录" ? "◷" : "✿"} {item}</button>
           ))}
         </nav>
         <div className="privacy-note">🔒 儿童信息仅用于教学服务，请勿截屏或外传。</div>
@@ -88,6 +96,7 @@ function Dashboard() {
   const [students, setStudents] = useState<User[]>([]);
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [groups, setGroups] = useState<TeacherGroup[]>([]);
+  const [rewards, setRewards] = useState<TeacherReward[]>([]);
   const [activeTab, setActiveTab] = useState<TeacherTab>("首页");
   const [selected, setSelected] = useState<string[]>([]);
   const [title, setTitle] = useState("快乐阅读伴学课");
@@ -97,19 +106,28 @@ function Dashboard() {
   const [creating, setCreating] = useState(false);
   const load = async () => {
     try {
-      const [studentData, roomData, groupData] = await Promise.all([
+      const [studentData, roomData, groupData, rewardData] = await Promise.all([
         api<User[]>("/api/users?role=student"),
         api<Classroom[]>("/api/rooms"),
-        api<TeacherGroup[]>("/api/groups")
+        api<TeacherGroup[]>("/api/groups"),
+        api<TeacherReward[]>("/api/logs/rewards")
       ]);
       setStudents(studentData);
       setRooms(roomData);
       setGroups(groupData);
+      setRewards(rewardData);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "加载失败");
     }
   };
   useEffect(() => { void load(); }, []);
+  const weeklyRewards = rewards.filter(({ createdAt }) => Date.now() - new Date(createdAt).getTime() < 7 * 24 * 60 * 60 * 1000);
+  const showTodayClasses = () => {
+    document.querySelector<HTMLElement>(".schedule")?.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+  };
 
   const openCreate = (student?: User) => {
     setModalError("");
@@ -156,9 +174,9 @@ function Dashboard() {
       <section className="welcome-strip"><div><small>WED · 今日教学</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>你今天有 {rooms.filter((room) => room.status !== "ended").length} 节待进行课堂，{students.length} 位学生等待陪伴。</p></div><Button onClick={() => openCreate()}>＋ 创建课堂</Button></section>
       {error && <p className="error">{error}</p>}
       <div className="stat-grid">
-        <Card><span className="stat-icon blue">◷</span><div><small>今日课程</small><strong>{rooms.length}</strong><p>待进行 {rooms.filter((room) => room.status !== "ended").length} 节</p></div></Card>
-        <Card><span className="stat-icon cyan">♙</span><div><small>我的学生</small><strong>{students.length}</strong><p>已分配学生</p></div></Card>
-        <Card><span className="stat-icon orange">✿</span><div><small>本周奖励</small><strong>—</strong><p>课堂中即时记录</p></div></Card>
+        <button className="stat-link" onClick={showTodayClasses}><Card><span className="stat-icon blue">◷</span><div><small>今日课程</small><strong>{rooms.length}</strong><p>待进行 {rooms.filter((room) => room.status !== "ended").length} 节</p></div><i>›</i></Card></button>
+        <button className="stat-link" onClick={() => setActiveTab("我的学生")}><Card><span className="stat-icon cyan">♙</span><div><small>我的学生</small><strong>{students.length}</strong><p>已分配学生</p></div><i>›</i></Card></button>
+        <button className="stat-link" onClick={() => setActiveTab("奖励记录")}><Card><span className="stat-icon orange">✿</span><div><small>本周奖励</small><strong>{weeklyRewards.length}</strong><p>查看即时奖励记录</p></div><i>›</i></Card></button>
       </div>
       <div className="dashboard-grid">
         <Card className="schedule">
@@ -200,6 +218,14 @@ function Dashboard() {
           <div className="record-table record-head"><span>课堂</span><span>学生</span><span>状态</span><span>开始时间</span><span>操作</span></div>
           {rooms.map((room) => <div className="record-table" key={room.id}><div><b>{room.title}</b><small>课堂编号 {room.id.slice(0, 8)}</small></div><span>{room.students.map(({ student }) => student.name).join("、") || "—"}</span><span className={`record-status ${room.status}`}>{room.status === "active" ? "进行中" : room.status === "ended" ? "已结束" : "待开始"}</span><span>{room.startedAt ? new Date(room.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "尚未开始"}</span><button disabled={room.status === "ended"} onClick={() => { location.href = appUrl(`classroom/${room.id}`); }}>{room.status === "active" ? "进入课堂" : room.status === "ended" ? "已归档" : "开始课堂"}</button></div>)}
           {!rooms.length && <div className="subpage-empty">还没有课堂记录。</div>}
+        </Card>
+      </section>}
+      {activeTab === "奖励记录" && <section className="teacher-subpage">
+        <div className="page-heading"><div><small>REWARD RECORDS</small><h1>奖励记录</h1><p>查看课堂中发给学生的每一次正向鼓励。</p></div><span className="week-reward-count">本周 {weeklyRewards.length} 次</span></div>
+        <Card className="reward-record-card">
+          <div className="reward-record-row reward-record-head"><span>奖励</span><span>学生</span><span>课堂</span><span>鼓励语</span><span>发送时间</span></div>
+          {rewards.map((reward) => <div className="reward-record-row" key={reward.id}><div><span className="reward-record-icon">{reward.rewardType === "red_flower" ? "🌸" : reward.rewardType === "trophy" ? "🏆" : reward.rewardType === "confetti" ? "🎉" : "⭐"}</span><b>{reward.rewardType === "red_flower" ? "小红花" : reward.rewardType === "trophy" ? "奖杯" : reward.rewardType === "confetti" ? "彩带" : "星星雨"}</b></div><span>{reward.student.name}</span><span>{reward.room.title}</span><span>{reward.message || "继续加油！"}</span><span>{new Date(reward.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>)}
+          {!rewards.length && <div className="subpage-empty">还没有奖励记录，进入课堂给学生送出第一份鼓励吧。</div>}
         </Card>
       </section>}
       {showCreate && <div className="modal-backdrop"><form className="modal" onSubmit={createRoom}><button type="button" className="modal-close" disabled={creating} onClick={() => setShowCreate(false)}>×</button><small>NEW CLASSROOM</small><h2>创建伴学课堂</h2><label>课堂名称<Input value={title} disabled={creating} onChange={(event) => setTitle(event.target.value)} /></label><fieldset disabled={creating}><legend>邀请学生 · 已选 {selected.length} 人</legend>{students.map((student) => <label className="check-row" key={student.id}><input type="checkbox" checked={selected.includes(student.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span>{student.name}</span><small>{student.email}</small></label>)}</fieldset>{modalError && <p className="modal-error" role="alert">⚠ {modalError}</p>}<Button type="submit" disabled={creating}>{creating ? "正在创建课堂…" : "创建并进入课堂"}</Button></form></div>}
