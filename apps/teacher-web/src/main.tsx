@@ -14,6 +14,14 @@ import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
+type TeacherTab = "首页" | "我的学生" | "学生分组" | "课堂记录";
+interface TeacherGroup {
+  id: string;
+  name: string;
+  teacherId: string;
+  description?: string;
+  students?: Array<{ user: Pick<User, "id" | "name" | "email"> }>;
+}
 
 function Login() {
   const [email, setEmail] = useState("teacher@example.com");
@@ -53,15 +61,15 @@ function Login() {
   );
 }
 
-function Shell({ children, active = "首页" }: { children: React.ReactNode; active?: string }) {
+function Shell({ children, active, onNavigate }: { children: React.ReactNode; active: TeacherTab; onNavigate(tab: TeacherTab): void }) {
   const user = session.user!;
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="logo"><span>伴</span><div><b>伴学空间</b><small>教师工作台</small></div></div>
         <nav>
-          {["首页", "我的学生", "学生分组", "课堂记录"].map((item) => (
-            <a className={active === item ? "active" : ""} href={appUrl()}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : "◷"} {item}</a>
+          {(["首页", "我的学生", "学生分组", "课堂记录"] as TeacherTab[]).map((item) => (
+            <button key={item} className={active === item ? "active" : ""} onClick={() => onNavigate(item)}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : "◷"} {item}</button>
           ))}
         </nav>
         <div className="privacy-note">🔒 儿童信息仅用于教学服务，请勿截屏或外传。</div>
@@ -78,18 +86,22 @@ function Shell({ children, active = "首页" }: { children: React.ReactNode; act
 function Dashboard() {
   const [students, setStudents] = useState<User[]>([]);
   const [rooms, setRooms] = useState<Classroom[]>([]);
+  const [groups, setGroups] = useState<TeacherGroup[]>([]);
+  const [activeTab, setActiveTab] = useState<TeacherTab>("首页");
   const [selected, setSelected] = useState<string[]>([]);
   const [title, setTitle] = useState("快乐阅读伴学课");
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState("");
   const load = async () => {
     try {
-      const [studentData, roomData] = await Promise.all([
+      const [studentData, roomData, groupData] = await Promise.all([
         api<User[]>("/api/users?role=student"),
-        api<Classroom[]>("/api/rooms")
+        api<Classroom[]>("/api/rooms"),
+        api<TeacherGroup[]>("/api/groups")
       ]);
       setStudents(studentData);
       setRooms(roomData);
+      setGroups(groupData);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "加载失败");
     }
@@ -110,7 +122,8 @@ function Dashboard() {
   };
 
   return (
-    <Shell>
+    <Shell active={activeTab} onNavigate={setActiveTab}>
+      {activeTab === "首页" && <>
       <section className="welcome-strip"><div><small>WED · 今日教学</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>你今天有 {rooms.filter((room) => room.status !== "ended").length} 节待进行课堂，{students.length} 位学生等待陪伴。</p></div><Button onClick={() => setShowCreate(true)}>＋ 创建课堂</Button></section>
       {error && <p className="error">{error}</p>}
       <div className="stat-grid">
@@ -134,6 +147,32 @@ function Dashboard() {
           {students.map((student, index) => <div className="student-row" key={student.id}><span className={`avatar a${index % 3}`}>{student.name.slice(0, 1)}</span><div><b>{student.name}</b><small>{student.email}</small></div><span className="online-dot">● 可邀请</span></div>)}
         </Card>
       </div>
+      </>}
+      {activeTab === "我的学生" && <section className="teacher-subpage">
+        <div className="page-heading"><div><small>MY STUDENTS</small><h1>我的学生</h1><p>查看已分配学生，并快速发起一节伴学课堂。</p></div><Button onClick={() => setShowCreate(true)}>＋ 创建课堂</Button></div>
+        <div className="student-management-grid">
+          {students.map((student, index) => {
+            const group = groups.find((item) => item.students?.some(({ user }) => user.id === student.id));
+            return <Card className="management-card" key={student.id}><div className={`management-avatar a${index % 3}`}>{student.name.slice(0, 1)}</div><div className="management-info"><h3>{student.name}</h3><p>{student.email}</p><span>{group ? `◫ ${group.name}` : "暂未分组"}</span></div><button onClick={() => { setSelected([student.id]); setTitle(`${student.name}的伴学课`); setShowCreate(true); }}>邀请上课 →</button></Card>;
+          })}
+          {!students.length && <Card className="subpage-empty">暂时没有已分配学生，请联系管理员分配。</Card>}
+        </div>
+      </section>}
+      {activeTab === "学生分组" && <section className="teacher-subpage">
+        <div className="page-heading"><div><small>STUDENT GROUPS</small><h1>学生分组</h1><p>查看由管理员分配给你的教学小组和成员。</p></div></div>
+        <div className="group-management-grid">
+          {groups.map((group) => <Card className="teacher-group-card" key={group.id}><div className="group-card-top"><span>◫</span><small>{group.students?.length ?? 0} 名学生</small></div><h3>{group.name}</h3><p>{group.description || "一起认真学习、快乐成长。"}</p><div className="group-member-list">{group.students?.map(({ user }, index) => <div key={user.id}><span className={`avatar a${index % 3}`}>{user.name.slice(0, 1)}</span><div><b>{user.name}</b><small>{user.email}</small></div></div>)}</div></Card>)}
+          {!groups.length && <Card className="subpage-empty">目前没有负责的学生分组，管理员分配后会显示在这里。</Card>}
+        </div>
+      </section>}
+      {activeTab === "课堂记录" && <section className="teacher-subpage">
+        <div className="page-heading"><div><small>CLASS RECORDS</small><h1>课堂记录</h1><p>查看课堂状态、参与学生和上课时间。</p></div></div>
+        <Card className="record-card">
+          <div className="record-table record-head"><span>课堂</span><span>学生</span><span>状态</span><span>开始时间</span><span>操作</span></div>
+          {rooms.map((room) => <div className="record-table" key={room.id}><div><b>{room.title}</b><small>课堂编号 {room.id.slice(0, 8)}</small></div><span>{room.students.map(({ student }) => student.name).join("、") || "—"}</span><span className={`record-status ${room.status}`}>{room.status === "active" ? "进行中" : room.status === "ended" ? "已结束" : "待开始"}</span><span>{room.startedAt ? new Date(room.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "尚未开始"}</span><button disabled={room.status === "ended"} onClick={() => { location.href = appUrl(`classroom/${room.id}`); }}>{room.status === "active" ? "进入课堂" : room.status === "ended" ? "已归档" : "开始课堂"}</button></div>)}
+          {!rooms.length && <div className="subpage-empty">还没有课堂记录。</div>}
+        </Card>
+      </section>}
       {showCreate && <div className="modal-backdrop"><form className="modal" onSubmit={createRoom}><button type="button" className="modal-close" onClick={() => setShowCreate(false)}>×</button><small>NEW CLASSROOM</small><h2>创建伴学课堂</h2><label>课堂名称<Input value={title} onChange={(event) => setTitle(event.target.value)} /></label><fieldset><legend>邀请学生</legend>{students.map((student) => <label className="check-row" key={student.id}><input type="checkbox" checked={selected.includes(student.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span>{student.name}</span><small>{student.email}</small></label>)}</fieldset><Button>创建并进入课堂</Button></form></div>}
     </Shell>
   );

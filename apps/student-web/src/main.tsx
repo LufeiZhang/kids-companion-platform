@@ -13,6 +13,22 @@ import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
+type StudentView = "home" | "tasks" | "treasure";
+
+const DAILY_TASKS = [
+  { id: "reading", icon: "📖", title: "晨读 15 分钟", detail: "大声朗读今天喜欢的故事" },
+  { id: "math", icon: "✏️", title: "完成数学练习", detail: "认真检查每一道题" },
+  { id: "review", icon: "🌱", title: "整理错题本", detail: "把今天的新发现记下来" }
+];
+
+function getSavedTasks() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("student-daily-tasks") ?? '["reading","math"]');
+    return Array.isArray(saved) ? saved as string[] : ["reading", "math"];
+  } catch {
+    return ["reading", "math"];
+  }
+}
 
 function Login() {
   const [email, setEmail] = useState("student@example.com");
@@ -46,19 +62,28 @@ function StudentHome() {
   const user = session.user!;
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [error, setError] = useState("");
+  const [activeView, setActiveView] = useState<StudentView>("home");
+  const [completedTasks, setCompletedTasks] = useState<string[]>(getSavedTasks);
   useEffect(() => {
     void api<Classroom[]>("/api/rooms").then(setRooms).catch((reason: Error) => setError(reason.message));
   }, []);
+  const toggleTask = (taskId: string) => {
+    setCompletedTasks((current) => {
+      const next = current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId];
+      localStorage.setItem("student-daily-tasks", JSON.stringify(next));
+      return next;
+    });
+  };
   const nextRoom = rooms.find((room) => room.status !== "ended");
   return (
     <div className="student-home">
-      <header className="kid-header"><a className="kid-logo" href={appUrl()}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></a><nav><a className="active">我的首页</a><a>学习任务</a><a>成长宝箱</a></nav><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></header>
-      <main>
+      <header className="kid-header"><button className="kid-logo" onClick={() => setActiveView("home")}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></button><nav><button className={activeView === "home" ? "active" : ""} onClick={() => setActiveView("home")}>我的首页</button><button className={activeView === "tasks" ? "active" : ""} onClick={() => setActiveView("tasks")}>学习任务</button><button className={activeView === "treasure" ? "active" : ""} onClick={() => setActiveView("treasure")}>成长宝箱</button></nav><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></header>
+      {activeView === "home" && <main>
         <section className="hero-card"><div className="hero-copy"><span>🌞 新的一天</span><h1>{user.name}，今天也要<br/><em>元气满满</em>地学习哦！</h1><p>认真完成每一次小挑战，星星就会越来越多 ✨</p>{nextRoom ? <Button onClick={() => { location.href = appUrl(`classroom/${nextRoom.id}`); }}>{nextRoom.status === "active" ? "老师正在等你，进入课堂" : "进入今天的课堂"}　→</Button> : <Button disabled>等待老师创建课堂</Button>}</div><div className="hero-art"><div className="sun">☀️</div><div className="book-kid">📚</div><span className="hero-star s1">★</span><span className="hero-star s2">★</span></div></section>
         {error && <p className="error">{error}</p>}
         <section className="summary-row">
           <Card><span className="summary-icon blue">📅</span><div><small>今日课程</small><strong>{rooms.filter((room) => room.status !== "ended").length}<i>节</i></strong><p>{nextRoom ? "准备好了吗？" : "今天没有待上课程"}</p></div></Card>
-          <Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>2<i>/ 3</i></strong><p>再完成 1 个就全部完成啦</p></div></Card>
+          <Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>{completedTasks.length}<i>/ {DAILY_TASKS.length}</i></strong><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成，你真棒！" : `再完成 ${DAILY_TASKS.length - completedTasks.length} 个就全部完成啦`}</p></div></Card>
           <Card><span className="summary-icon pink">⭐</span><div><small>我的积分</small><strong>128<i>颗</i></strong><p>本周已经获得 36 颗</p></div></Card>
           <Card><span className="summary-icon purple">🏅</span><div><small>我的徽章</small><strong>6<i>枚</i></strong><p>距离新徽章还差一点点</p></div></Card>
         </section>
@@ -68,7 +93,28 @@ function StudentHome() {
           </Card>
           <Card className="encourage"><div className="quote-mark">“</div><p>每天进步一点点，<br/>你正在变成更棒的自己！</p><span>— 来自伴学老师的悄悄话</span><div className="rainbow">🌈</div></Card>
         </div>
-      </main>
+      </main>}
+      {activeView === "tasks" && <main className="student-subpage">
+        <section className="subpage-hero tasks-hero"><div><small>DAILY ADVENTURE</small><h1>今天的学习任务</h1><p>每完成一个小任务，就点亮一颗成长星星 ✨</p></div><span>🗺️</span></section>
+        <Card className="task-list-card">
+          <div className="task-progress"><div><h3>今日进度</h3><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成！今天的你闪闪发光。" : "一步一步来，你已经做得很好啦。"}</p></div><strong>{completedTasks.length} / {DAILY_TASKS.length}</strong></div>
+          <div className="progress-track"><i style={{ width: `${completedTasks.length / DAILY_TASKS.length * 100}%` }} /></div>
+          {DAILY_TASKS.map((task) => {
+            const done = completedTasks.includes(task.id);
+            return <button className={`task-item ${done ? "done" : ""}`} key={task.id} onClick={() => toggleTask(task.id)}><span className="task-icon">{task.icon}</span><div><b>{task.title}</b><small>{task.detail}</small></div><i className="task-check">{done ? "✓" : ""}</i></button>;
+          })}
+        </Card>
+      </main>}
+      {activeView === "treasure" && <main className="student-subpage">
+        <section className="subpage-hero treasure-hero"><div><small>GROWTH TREASURE</small><h1>{user.name}的成长宝箱</h1><p>你的每一次认真，都变成了宝箱里的闪亮收藏。</p></div><span>🎁</span></section>
+        <section className="treasure-summary"><Card><span>⭐</span><div><small>成长星星</small><strong>128</strong></div></Card><Card><span>🏅</span><div><small>已获徽章</small><strong>6</strong></div></Card><Card><span>🔥</span><div><small>连续学习</small><strong>7 天</strong></div></Card></section>
+        <Card className="badge-collection"><div className="card-heading"><div><span>🏆</span><div><h3>我的徽章</h3><p>继续努力，解锁更多成长纪念</p></div></div><small>已点亮 6 枚</small></div>
+          <div className="treasure-grid">
+            {[["🎯","专注小达人","认真完成一节伴学课"],["📚","阅读之星","完成五次阅读任务"],["🌞","元气早鸟","连续三天按时学习"],["💪","坚持之星","连续学习七天"],["🌸","鼓励收藏家","收到五朵小红花"],["🚀","进步小火箭","本周完成全部任务"]].map(([icon, name, detail]) => <div className="badge-card" key={name}><span>{icon}</span><b>{name}</b><small>{detail}</small></div>)}
+            <div className="badge-card locked"><span>?</span><b>神秘徽章</b><small>再完成 2 节课堂解锁</small></div>
+          </div>
+        </Card>
+      </main>}
     </div>
   );
 }
