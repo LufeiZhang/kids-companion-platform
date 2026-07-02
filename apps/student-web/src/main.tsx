@@ -75,6 +75,12 @@ function StudentHome() {
       return next;
     });
   };
+  const showTodayClasses = () => {
+    document.querySelector<HTMLElement>(".today-class")?.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+  };
   const nextRoom = rooms.find((room) => room.status !== "ended");
   return (
     <div className="student-home">
@@ -83,10 +89,10 @@ function StudentHome() {
         <section className="hero-card"><div className="hero-copy"><span>🌞 新的一天</span><h1>{user.name}，今天也要<br/><em>元气满满</em>地学习哦！</h1><p>认真完成每一次小挑战，星星就会越来越多 ✨</p>{nextRoom ? <Button onClick={() => { location.href = appUrl(`classroom/${nextRoom.id}`); }}>{nextRoom.status === "active" ? "老师正在等你，进入课堂" : "进入今天的课堂"}　→</Button> : <Button disabled>等待老师创建课堂</Button>}</div><div className="hero-art"><div className="sun">☀️</div><div className="book-kid">📚</div><span className="hero-star s1">★</span><span className="hero-star s2">★</span></div></section>
         {error && <p className="error">{error}</p>}
         <section className="summary-row">
-          <Card><span className="summary-icon blue">📅</span><div><small>今日课程</small><strong>{rooms.filter((room) => room.status !== "ended").length}<i>节</i></strong><p>{nextRoom ? "准备好了吗？" : "今天没有待上课程"}</p></div></Card>
-          <Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>{completedTasks.length}<i>/ {DAILY_TASKS.length}</i></strong><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成，你真棒！" : `再完成 ${DAILY_TASKS.length - completedTasks.length} 个就全部完成啦`}</p></div></Card>
-          <Card><span className="summary-icon pink">⭐</span><div><small>我的积分</small><strong>128<i>颗</i></strong><p>本周已经获得 36 颗</p></div></Card>
-          <Card><span className="summary-icon purple">🏅</span><div><small>我的徽章</small><strong>6<i>枚</i></strong><p>距离新徽章还差一点点</p></div></Card>
+          <button className="summary-link" onClick={showTodayClasses}><Card><span className="summary-icon blue">📅</span><div><small>今日课程</small><strong>{rooms.filter((room) => room.status !== "ended").length}<i>节</i></strong><p>{nextRoom ? "准备好了吗？" : "今天没有待上课程"}</p></div><i className="summary-arrow">›</i></Card></button>
+          <button className="summary-link" onClick={() => setActiveView("tasks")}><Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>{completedTasks.length}<i>/ {DAILY_TASKS.length}</i></strong><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成，你真棒！" : `再完成 ${DAILY_TASKS.length - completedTasks.length} 个就全部完成啦`}</p></div><i className="summary-arrow">›</i></Card></button>
+          <button className="summary-link" onClick={() => setActiveView("treasure")}><Card><span className="summary-icon pink">⭐</span><div><small>我的积分</small><strong>128<i>颗</i></strong><p>本周已经获得 36 颗</p></div><i className="summary-arrow">›</i></Card></button>
+          <button className="summary-link" onClick={() => setActiveView("treasure")}><Card><span className="summary-icon purple">🏅</span><div><small>我的徽章</small><strong>6<i>枚</i></strong><p>距离新徽章还差一点点</p></div><i className="summary-arrow">›</i></Card></button>
         </section>
         <div className="home-columns">
           <Card className="today-class"><div className="card-heading"><div><span>📖</span><div><h3>今天的课程</h3><p>和老师一起开启知识探险</p></div></div><small>{rooms.length} 节课程</small></div>
