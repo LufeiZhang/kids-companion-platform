@@ -5,7 +5,7 @@ import { api, connectSocket, login, sendSignal, session } from "@companion/share
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
   Classroom, CoursewarePayload, RTCAction, RTCSignalPayload, RewardPayload,
-  SignalMessage, StudentStatusAction
+  SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, Input } from "@companion/ui";
@@ -134,14 +134,43 @@ function RewardOverlay({ reward, onDone }: { reward: RewardPayload; onDone(): vo
   );
 }
 
-function ClassroomControls({ sendStatus }: { sendStatus(action: StudentStatusAction): void }) {
+function ClassroomControls({ sendStatus, sendInteraction }: {
+  sendStatus(action: StudentStatusAction): void;
+  sendInteraction(action: StudentInteractionAction, payload: StudentInteractionPayload): Promise<boolean>;
+}) {
   const rtc = useRTC();
+  const [handRaised, setHandRaised] = useState(false);
+  const [showEmojis, setShowEmojis] = useState(false);
+  const [reaction, setReaction] = useState("");
+  const toggleHand = async () => {
+    const next = !handRaised;
+    if (await sendInteraction(next ? "RAISE_HAND" : "LOWER_HAND", { raised: next })) {
+      setHandRaised(next);
+      setReaction(next ? "✋ 老师，我举手啦！" : "已经放下小手");
+    }
+  };
+  const sendEmoji = async (emoji: string) => {
+    if (await sendInteraction("SEND_EMOJI", { emoji })) {
+      setReaction(`${emoji} 已发送给老师`);
+      setShowEmojis(false);
+    }
+  };
+  useEffect(() => {
+    if (!reaction) return;
+    const timer = setTimeout(() => setReaction(""), 2200);
+    return () => clearTimeout(timer);
+  }, [reaction]);
   return (
-    <div className="student-controls">
-      <button title="麦克风仅用于本次课堂通话，不会录音" className={!rtc.micOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
-      <button title="摄像头仅用于本次课堂通话，不会录像" className={!rtc.cameraOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
-      <button><span>✋</span>举手</button><button><span>😊</span>表情</button>
-    </div>
+    <>
+      <div className="student-controls">
+        <button title="麦克风仅用于本次课堂通话，不会录音" className={!rtc.micOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
+        <button title="摄像头仅用于本次课堂通话，不会录像" className={!rtc.cameraOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
+        <button className={handRaised ? "active" : ""} onClick={() => void toggleHand()}><span>✋</span>{handRaised ? "已举手" : "举手"}</button>
+        <button className={showEmojis ? "active" : ""} onClick={() => setShowEmojis((value) => !value)}><span>😊</span>表情</button>
+        {showEmojis && <div className="emoji-picker">{["😊", "👍", "🎉", "❤️", "⭐"].map((emoji) => <button key={emoji} onClick={() => void sendEmoji(emoji)}>{emoji}</button>)}</div>}
+      </div>
+      {reaction && <div className="student-reaction">{reaction}</div>}
+    </>
   );
 }
 
@@ -183,6 +212,21 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       target_uid: teacherId,
       payload
     }));
+  }, [room?.teacherId, roomId, user.id]);
+  const sendInteraction = useCallback(async (action: StudentInteractionAction, payload: StudentInteractionPayload) => {
+    const socket = socketRef.current;
+    const teacherId = room?.teacherId;
+    if (!socket || !teacherId) return false;
+    const ack = await sendSignal(socket, createSignal({
+      msg_type: "STUDENT_INTERACTION",
+      action,
+      room_id: roomId,
+      from_uid: user.id,
+      target_uid: teacherId,
+      payload
+    }));
+    if (!ack.ok) setFocusMessage(ack.error ?? "互动发送失败，请稍后再试");
+    return ack.ok;
   }, [room?.teacherId, roomId, user.id]);
 
   useEffect(() => {
@@ -240,7 +284,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
           <div className="teacher-pip"><VideoTile label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
           <div className="student-self-pip"><VideoTile label="我的画面" source="local" muted /></div>
-          <ClassroomControls sendStatus={sendStatus} />
+          <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} />
           <StudentVideoError />
         </main>
         {reward && <RewardOverlay reward={reward} onDone={() => setReward(null)} />}

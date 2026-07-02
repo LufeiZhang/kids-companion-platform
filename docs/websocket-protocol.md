@@ -103,6 +103,13 @@ WebRTC 点对点协商使用定向消息，`target_uid` 必填。Offer 与 Answe
 当前 MVP 使用公共 STUN 完成常见网络下的 P2P 连接。生产环境需要配置自有 TURN，
 或将 `RTCProvider` 替换为 Agora/TRTC 适配器，以覆盖严格 NAT 和企业网络。
 
+### STUDENT_INTERACTION
+
+`RAISE_HAND`、`LOWER_HAND`、`SEND_EMOJI`
+
+学生举手 payload 为 `{ "raised": true }`，表情 payload 为 `{ "emoji": "😊" }`。
+消息必须由课堂学生定向发送给本课堂教师；教师端收到后更新学生状态卡或播放表情动画。
+
 ## 奖励事务顺序
 
 1. 教师发送带目标学生的 `GRANT_REWARD`。

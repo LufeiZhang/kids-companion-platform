@@ -96,6 +96,9 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         if (message.msg_type === "STUDENT_STATUS" && !access.isStudent) {
           return ack({ ok: false, msg_id: message.msg_id, error: "状态只能由课堂学生上报" });
         }
+        if (message.msg_type === "STUDENT_INTERACTION" && !access.isStudent) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "课堂互动只能由学生发起" });
+        }
         const participantIds = [
           access.room.teacherId,
           ...access.room.students.map(({ studentId }) => studentId)
@@ -108,6 +111,9 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         }
         if (message.msg_type === "RTC_SIGNAL" && !access.isTeacher && !access.isStudent) {
           return ack({ ok: false, msg_id: message.msg_id, error: "只有课堂教师和学生可以发起音视频" });
+        }
+        if (message.msg_type === "STUDENT_INTERACTION" && message.target_uid !== access.room.teacherId) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "学生互动只能发送给本课堂教师" });
         }
 
         if (message.msg_type === "ROOM_EVENT" && message.action === "JOIN_ROOM") {

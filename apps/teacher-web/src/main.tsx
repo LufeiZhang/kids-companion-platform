@@ -5,7 +5,8 @@ import { api, API_URL, connectSocket, login, sendSignal, session } from "@compan
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
   Classroom, Courseware, CoursewarePayload, DrawPayload, RewardPayload,
-  RTCAction, RTCSignalPayload, SignalMessage, StudentStatusAction, User, WhiteboardAction
+  RTCAction, RTCSignalPayload, SignalMessage, StudentInteractionPayload,
+  User, WhiteboardAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, EmptyState, Input } from "@companion/ui";
@@ -206,16 +207,20 @@ function Dashboard() {
   );
 }
 
-function TeacherVideoPanel({ studentName, studentState }: {
+function TeacherVideoPanel({ studentName, studentState, handRaised, emoji, emojiKey }: {
   studentName: string;
   studentState: "online" | "hidden" | "offline";
+  handRaised?: boolean;
+  emoji?: string;
+  emojiKey?: number;
 }) {
   const rtc = useRTC();
   return (
     <>
       <div className="student-video-card">
         <VideoTile label={studentName} />
-        <div className="student-state"><b>{studentName}</b><span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div>
+        {emoji && <div className="teacher-emoji-pop" key={emojiKey}>{emoji}</div>}
+        <div className="student-state"><b>{studentName}</b><div>{handRaised && <span className="hand-raised">✋ 已举手</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
       </div>
       <div className="teacher-local-video"><VideoTile label="我的画面" source="local" muted /></div>
       <div className="teacher-rtc-controls">
@@ -238,6 +243,13 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [courseware, setCourseware] = useState<Courseware[]>([]);
   const [selectedCourseware, setSelectedCourseware] = useState<Courseware | null>(null);
   const [notice, setNotice] = useState("");
+  const [raisedHands, setRaisedHands] = useState<Record<string, boolean>>({});
+  const [studentEmoji, setStudentEmoji] = useState<{ uid: string; emoji: string; id: number } | null>(null);
+  useEffect(() => {
+    if (!studentEmoji) return;
+    const timer = setTimeout(() => setStudentEmoji(null), 2200);
+    return () => clearTimeout(timer);
+  }, [studentEmoji]);
 
   const target = room?.students[0]?.student;
   const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload) => {
@@ -291,6 +303,17 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           ...current,
           [message.from_uid]: message.action === "USER_OFFLINE" ? "offline" : "online"
         }));
+      }
+      if (message.msg_type === "STUDENT_INTERACTION") {
+        const payload = message.payload as unknown as StudentInteractionPayload;
+        if (message.action === "RAISE_HAND" || message.action === "LOWER_HAND") {
+          setRaisedHands((current) => ({ ...current, [message.from_uid]: message.action === "RAISE_HAND" }));
+          setNotice(message.action === "RAISE_HAND" ? "学生举手了 ✋" : "学生已放下手");
+        }
+        if (message.action === "SEND_EMOJI" && payload.emoji) {
+          setStudentEmoji({ uid: message.from_uid, emoji: payload.emoji, id: Date.now() });
+          setNotice(`学生发送了 ${payload.emoji}`);
+        }
       }
     });
     return () => { socket.disconnect(); };
@@ -380,7 +403,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           <aside className="classroom-aside">
             <div className="aside-block">
               <div className="aside-heading"><b>学生状态</b><span>{target ? "1 人" : "0 人"}</span></div>
-              {target && <TeacherVideoPanel studentName={target.name} studentState={online[target.id] ?? "offline"} />}
+              {target && <TeacherVideoPanel studentName={target.name} studentState={online[target.id] ?? "offline"} handRaised={raisedHands[target.id]} emoji={studentEmoji?.uid === target.id ? studentEmoji.emoji : undefined} emojiKey={studentEmoji?.id} />}
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>即时鼓励</b><small>选择一份奖励</small></div>
