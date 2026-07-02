@@ -136,6 +136,10 @@ importers:
         version: 5.9.3
 
   packages/rtc:
+    dependencies:
+      '@companion/types':
+        specifier: '*'
+        version: link:../types
     devDependencies:
       '@types/react':
         specifier: ^18.3.18

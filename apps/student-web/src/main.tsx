@@ -1,10 +1,11 @@
-import { StrictMode, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import { api, connectSocket, login, sendSignal, session } from "@companion/shared";
-import { RTCProvider, VideoPlaceholder, useRTC } from "@companion/rtc";
+import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, CoursewarePayload, RewardPayload, SignalMessage, StudentStatusAction
+  Classroom, CoursewarePayload, RTCAction, RTCSignalPayload, RewardPayload,
+  SignalMessage, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, Input } from "@companion/ui";
@@ -137,11 +138,16 @@ function ClassroomControls({ sendStatus }: { sendStatus(action: StudentStatusAct
   const rtc = useRTC();
   return (
     <div className="student-controls">
-      <button className={!rtc.micOn ? "off" : ""} onClick={() => { rtc.toggleMic(); sendStatus(rtc.micOn ? "MIC_OFF" : "MIC_ON"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
-      <button className={!rtc.cameraOn ? "off" : ""} onClick={() => { rtc.toggleCamera(); sendStatus(rtc.cameraOn ? "CAMERA_OFF" : "CAMERA_ON"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
+      <button title="麦克风仅用于本次课堂通话，不会录音" className={!rtc.micOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
+      <button title="摄像头仅用于本次课堂通话，不会录像" className={!rtc.cameraOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
       <button><span>✋</span>举手</button><button><span>😊</span>表情</button>
     </div>
   );
+}
+
+function StudentVideoError() {
+  const rtc = useRTC();
+  return rtc.error ? <div className="rtc-error">⚠ {rtc.error}</div> : null;
 }
 
 function StudentClassroom({ roomId }: { roomId: string }) {
@@ -156,8 +162,8 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const [ended, setEnded] = useState(false);
   const [connection, setConnection] = useState("正在连接老师…");
 
-  const message = <T,>(msgType: SignalMessage["msg_type"], action: SignalMessage["action"], payload: T) =>
-    createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, payload });
+  const message = <T,>(msgType: SignalMessage["msg_type"], action: SignalMessage["action"], payload: T, targetUid?: string) =>
+    createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, target_uid: targetUid, payload });
   const send = (signal: SignalMessage<unknown>) => {
     if (socketRef.current) void sendSignal(socketRef.current, signal);
   };
@@ -165,6 +171,19 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     visibility: document.visibilityState,
     last_active_at: Date.now()
   }));
+  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload) => {
+    const socket = socketRef.current;
+    const teacherId = room?.teacherId;
+    if (!socket || !teacherId) return;
+    void sendSignal(socket, createSignal({
+      msg_type: "RTC_SIGNAL",
+      action,
+      room_id: roomId,
+      from_uid: user.id,
+      target_uid: teacherId,
+      payload
+    }));
+  }, [room?.teacherId, roomId, user.id]);
 
   useEffect(() => {
     void api<Classroom>(`/api/rooms/${roomId}`).then((data) => {
@@ -210,13 +229,19 @@ function StudentClassroom({ roomId }: { roomId: string }) {
 
   if (!room) return <div className="kid-loading"><span>⭐</span>正在飞往课堂…</div>;
   return (
-    <RTCProvider>
+    <RTCProvider
+      initiator={false}
+      incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
+      sendRTC={sendRTC}
+    >
       <div className="student-classroom">
         <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">认真听讲的你最闪亮 ✨</span></header>
         <main className="student-class-layout">
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
-          <div className="teacher-pip"><VideoPlaceholder label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
+          <div className="teacher-pip"><VideoTile label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
+          <div className="student-self-pip"><VideoTile label="我的画面" source="local" muted /></div>
           <ClassroomControls sendStatus={sendStatus} />
+          <StudentVideoError />
         </main>
         {reward && <RewardOverlay reward={reward} onDone={() => setReward(null)} />}
         {focusMessage && <div className="focus-overlay"><div className="focus-card"><span>🎯</span><h2>小眼睛，看这里</h2><p>{focusMessage}</p><Button onClick={() => { setFocusMessage(""); sendStatus("ACTIVE"); }}>我回来啦！</Button></div></div>}

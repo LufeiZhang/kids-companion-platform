@@ -12,7 +12,8 @@
 - 小红花、奖杯、彩带、星星雨奖励动画
 - 学生 `visibilitychange` 状态上报，教师端离开页面提醒
 - PostgreSQL + Prisma 持久化用户、房间、白板事件、信令、奖励与审计日志
-- RTCProvider 抽象和音视频占位组件，便于接入 Agora/TRTC/WebRTC
+- 浏览器摄像头/麦克风、本地预览和 WebRTC 点对点音视频
+- RTCProvider 抽象，后续可替换为 Agora/TRTC
 - 管理后台账号、学生分组、教师分配、课堂/奖励/信令/审计记录
 
 ## 项目结构
@@ -106,11 +107,13 @@ npm run build
 
 ## 安全与合规边界
 
-MVP 不录课、不做系统级锁屏，也不采集非教学必需的儿童信息。接入真实 RTC 前必须增加明确的摄像头/麦克风用途提示；录课须取得家长单独授权。生产环境必须使用 HTTPS/WSS、替换 JWT 密钥、限制上传类型、对联系方式脱敏并配置管理员最小权限。详见 [架构文档](docs/architecture.md)。
+MVP 不录课、不做系统级锁屏，也不采集非教学必需的儿童信息。开启摄像头/麦克风时由浏览器显示权限申请，拒绝后仍可继续使用白板；录课须取得家长单独授权。生产环境必须使用 HTTPS/WSS、替换 JWT 密钥、限制上传类型、对联系方式脱敏并配置管理员最小权限。详见 [架构文档](docs/architecture.md)。
 
 ## 当前 RTC 范围
 
-音视频区域为占位实现，业务代码只依赖 `RTCProviderAdapter`。接入 Agora、TRTC 或原生 WebRTC 时，在 `packages/rtc` 新增适配器即可，无需修改白板和信令业务。
+音视频区域已使用 `getUserMedia` 和原生 WebRTC 实现一对一点对点通话，通过现有
+Socket.IO 通道交换 Offer、Answer 和 ICE。MVP 使用公共 STUN；跨严格 NAT 的生产环境
+应增加 TURN，或在 `packages/rtc` 接入 Agora/TRTC，无需修改白板业务。
 
 ## 部署到 Render
 

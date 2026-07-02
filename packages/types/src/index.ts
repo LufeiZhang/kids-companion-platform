@@ -55,6 +55,9 @@ export const MESSAGE_ACTIONS = {
   STUDENT_STATUS: [
     "PAGE_VISIBLE", "PAGE_HIDDEN", "IDLE", "ACTIVE",
     "CAMERA_ON", "CAMERA_OFF", "MIC_ON", "MIC_OFF"
+  ],
+  RTC_SIGNAL: [
+    "RTC_READY", "RTC_OFFER", "RTC_ANSWER", "ICE_CANDIDATE"
   ]
 } as const;
 
@@ -64,8 +67,9 @@ export type WhiteboardAction = typeof MESSAGE_ACTIONS.WHITEBOARD_EVENT[number];
 export type CoursewareAction = typeof MESSAGE_ACTIONS.COURSEWARE_CONTROL[number];
 export type TeacherAction = typeof MESSAGE_ACTIONS.TEACHER_CONTROL[number];
 export type StudentStatusAction = typeof MESSAGE_ACTIONS.STUDENT_STATUS[number];
+export type RTCAction = typeof MESSAGE_ACTIONS.RTC_SIGNAL[number];
 export type SignalAction =
-  | RoomAction | WhiteboardAction | CoursewareAction | TeacherAction | StudentStatusAction;
+  | RoomAction | WhiteboardAction | CoursewareAction | TeacherAction | StudentStatusAction | RTCAction;
 
 export interface DrawPayload {
   x: number;
@@ -88,6 +92,11 @@ export interface RewardPayload {
   animation: string;
   message: string;
   duration: number;
+}
+
+export interface RTCSignalPayload {
+  description?: RTCSessionDescriptionInit;
+  candidate?: RTCIceCandidateInit;
 }
 
 export interface SignalMessage<T = Record<string, unknown>> {

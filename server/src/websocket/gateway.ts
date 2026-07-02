@@ -30,6 +30,10 @@ async function getRoomAccess(roomId: string, user: AuthUser) {
 }
 
 async function saveSignal(message: SignalMessage, ackStatus: string) {
+  // SDP and ICE can contain network metadata. Keep only an event marker in logs.
+  const payload = message.msg_type === "RTC_SIGNAL"
+    ? json({ rtc_event: message.action })
+    : json(message.payload);
   await prisma.signalLog.upsert({
     where: { msgId: message.msg_id },
     update: { ackStatus },
@@ -40,7 +44,7 @@ async function saveSignal(message: SignalMessage, ackStatus: string) {
       targetUserId: message.target_uid,
       msgType: message.msg_type,
       action: message.action,
-      payload: json(message.payload),
+      payload,
       ackStatus
     }
   });
@@ -92,8 +96,18 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         if (message.msg_type === "STUDENT_STATUS" && !access.isStudent) {
           return ack({ ok: false, msg_id: message.msg_id, error: "状态只能由课堂学生上报" });
         }
-        if (message.target_uid && !access.room.students.some(({ studentId }) => studentId === message!.target_uid)) {
-          return ack({ ok: false, msg_id: message.msg_id, error: "目标学生不在本课堂" });
+        const participantIds = [
+          access.room.teacherId,
+          ...access.room.students.map(({ studentId }) => studentId)
+        ];
+        if (message.target_uid && (!participantIds.includes(message.target_uid) || message.target_uid === socket.data.user.id)) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "目标用户不在本课堂" });
+        }
+        if (message.msg_type === "RTC_SIGNAL" && !message.target_uid) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "音视频信令必须指定目标用户" });
+        }
+        if (message.msg_type === "RTC_SIGNAL" && !access.isTeacher && !access.isStudent) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "只有课堂教师和学生可以发起音视频" });
         }
 
         if (message.msg_type === "ROOM_EVENT" && message.action === "JOIN_ROOM") {

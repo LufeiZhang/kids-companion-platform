@@ -1,11 +1,11 @@
-import { StrictMode, useEffect, useMemo, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
-import { RTCProvider, VideoPlaceholder } from "@companion/rtc";
+import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
   Classroom, Courseware, CoursewarePayload, DrawPayload, RewardPayload,
-  SignalMessage, StudentStatusAction, User, WhiteboardAction
+  RTCAction, RTCSignalPayload, SignalMessage, StudentStatusAction, User, WhiteboardAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, EmptyState, Input } from "@companion/ui";
@@ -206,6 +206,28 @@ function Dashboard() {
   );
 }
 
+function TeacherVideoPanel({ studentName, studentState }: {
+  studentName: string;
+  studentState: "online" | "hidden" | "offline";
+}) {
+  const rtc = useRTC();
+  return (
+    <>
+      <div className="student-video-card">
+        <VideoTile label={studentName} />
+        <div className="student-state"><b>{studentName}</b><span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div>
+      </div>
+      <div className="teacher-local-video"><VideoTile label="我的画面" source="local" muted /></div>
+      <div className="teacher-rtc-controls">
+        <button className={rtc.cameraOn ? "active" : ""} onClick={() => void rtc.toggleCamera()}>{rtc.cameraOn ? "📹 关闭摄像头" : "📷 开启摄像头"}</button>
+        <button className={rtc.micOn ? "active" : ""} onClick={() => void rtc.toggleMic()}>{rtc.micOn ? "🎙️ 关闭麦克风" : "🎤 开启麦克风"}</button>
+      </div>
+      <small className="rtc-privacy">🔒 仅用于本次课堂通话，不录音录像</small>
+      {rtc.error && <div className="teacher-rtc-error">⚠ {rtc.error}</div>}
+    </>
+  );
+}
+
 function ClassroomPage({ roomId }: { roomId: string }) {
   const user = session.user!;
   const socketRef = useRef<Socket | null>(null);
@@ -218,6 +240,18 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [notice, setNotice] = useState("");
 
   const target = room?.students[0]?.student;
+  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload) => {
+    const socket = socketRef.current;
+    if (!socket || !target) return;
+    void sendSignal(socket, createSignal({
+      msg_type: "RTC_SIGNAL",
+      action,
+      room_id: roomId,
+      from_uid: user.id,
+      target_uid: target.id,
+      payload
+    }));
+  }, [roomId, target?.id, user.id]);
   const makeSignal = <T,>(msgType: SignalMessage["msg_type"], action: SignalMessage["action"], payload: T, targetUid?: string) =>
     createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, target_uid: targetUid, payload });
   const emit = async (message: SignalMessage<unknown>) => {
@@ -322,7 +356,11 @@ function ClassroomPage({ roomId }: { roomId: string }) {
 
   if (!room) return <div className="loading">正在准备课堂空间…</div>;
   return (
-    <RTCProvider>
+    <RTCProvider
+      initiator
+      incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
+      sendRTC={sendRTC}
+    >
       <div className="classroom-page">
         <header className="classroom-topbar">
           <a href={appUrl()} className="back">←</a><div className="class-title"><small>正在授课</small><b>{room.title}</b></div>
@@ -342,7 +380,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           <aside className="classroom-aside">
             <div className="aside-block">
               <div className="aside-heading"><b>学生状态</b><span>{target ? "1 人" : "0 人"}</span></div>
-              {target && <div className="student-video-card"><VideoPlaceholder label={target.name} /><div className="student-state"><b>{target.name}</b><span className={`state ${online[target.id] ?? "offline"}`}>{online[target.id] === "hidden" ? "⚠ 可能离开页面" : online[target.id] === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>}
+              {target && <TeacherVideoPanel studentName={target.name} studentState={online[target.id] ?? "offline"} />}
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>即时鼓励</b><small>选择一份奖励</small></div>
