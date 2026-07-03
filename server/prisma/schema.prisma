@@ -24,6 +24,11 @@ enum CoursewareType {
   pdf
 }
 
+enum LearningTaskStatus {
+  pending
+  completed
+}
+
 model User {
   id             String            @id @default(cuid())
   name           String
@@ -44,6 +49,8 @@ model User {
   rewardsReceived RewardLog[]      @relation("RewardStudent")
   auditLogs      AdminAuditLog[]   @relation("AdminActor")
   managedGroups  StudentGroup[]    @relation("GroupTeacher")
+  tasksAssigned  LearningTask[]    @relation("TaskTeacher")
+  tasksReceived  LearningTask[]    @relation("TaskStudent")
   createdAt      DateTime          @default(now())
   updatedAt      DateTime          @updatedAt
 }
@@ -153,6 +160,24 @@ model RewardLog {
   rewardType String
   message    String?
   createdAt  DateTime  @default(now())
+}
+
+model LearningTask {
+  id          String             @id @default(cuid())
+  title       String
+  detail      String?
+  status      LearningTaskStatus @default(pending)
+  teacherId   String
+  teacher     User               @relation("TaskTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+  studentId   String
+  student     User               @relation("TaskStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  dueDate     DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([teacherId, createdAt])
+  @@index([studentId, status])
 }
 
 model AdminAuditLog {

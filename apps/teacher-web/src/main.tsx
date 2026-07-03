@@ -4,7 +4,7 @@ import type { Socket } from "socket.io-client";
 import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, Courseware, CoursewarePayload, DrawPayload, RewardPayload,
+  Classroom, Courseware, CoursewarePayload, DrawPayload, LearningTask, RewardPayload,
   RTCAction, RTCSignalPayload, SignalMessage, StudentInteractionPayload,
   User, WhiteboardAction
 } from "@companion/types";
@@ -15,7 +15,7 @@ import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
-type TeacherTab = "首页" | "我的学生" | "学生分组" | "课堂记录" | "奖励记录";
+type TeacherTab = "首页" | "我的学生" | "学生分组" | "学习任务" | "课堂记录" | "奖励记录";
 interface TeacherGroup {
   id: string;
   name: string;
@@ -77,8 +77,8 @@ function Shell({ children, active, onNavigate }: { children: React.ReactNode; ac
       <aside className="sidebar">
         <div className="logo"><span>伴</span><div><b>伴学空间</b><small>教师工作台</small></div></div>
         <nav>
-          {(["首页", "我的学生", "学生分组", "课堂记录", "奖励记录"] as TeacherTab[]).map((item) => (
-            <button key={item} className={active === item ? "active" : ""} onClick={() => onNavigate(item)}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : item === "课堂记录" ? "◷" : "✿"} {item}</button>
+          {(["首页", "我的学生", "学生分组", "学习任务", "课堂记录", "奖励记录"] as TeacherTab[]).map((item) => (
+            <button key={item} className={active === item ? "active" : ""} onClick={() => onNavigate(item)}>{item === "首页" ? "▦" : item === "我的学生" ? "♙" : item === "学生分组" ? "◫" : item === "学习任务" ? "✓" : item === "课堂记录" ? "◷" : "✿"} {item}</button>
           ))}
         </nav>
         <div className="privacy-note">🔒 儿童信息仅用于教学服务，请勿截屏或外传。</div>
@@ -97,6 +97,7 @@ function Dashboard() {
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [groups, setGroups] = useState<TeacherGroup[]>([]);
   const [rewards, setRewards] = useState<TeacherReward[]>([]);
+  const [tasks, setTasks] = useState<LearningTask[]>([]);
   const [activeTab, setActiveTab] = useState<TeacherTab>("首页");
   const [selected, setSelected] = useState<string[]>([]);
   const [title, setTitle] = useState("快乐阅读伴学课");
@@ -104,18 +105,24 @@ function Dashboard() {
   const [error, setError] = useState("");
   const [modalError, setModalError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [showTaskForm, setShowTaskForm] = useState(false);
+  const [taskError, setTaskError] = useState("");
+  const [savingTask, setSavingTask] = useState(false);
+  const [taskForm, setTaskForm] = useState({ title: "", detail: "", studentId: "", dueDate: "" });
   const load = async () => {
     try {
-      const [studentData, roomData, groupData, rewardData] = await Promise.all([
+      const [studentData, roomData, groupData, rewardData, taskData] = await Promise.all([
         api<User[]>("/api/users?role=student"),
         api<Classroom[]>("/api/rooms"),
         api<TeacherGroup[]>("/api/groups"),
-        api<TeacherReward[]>("/api/logs/rewards")
+        api<TeacherReward[]>("/api/logs/rewards"),
+        api<LearningTask[]>("/api/tasks")
       ]);
       setStudents(studentData);
       setRooms(roomData);
       setGroups(groupData);
       setRewards(rewardData);
+      setTasks(taskData);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "加载失败");
     }
@@ -139,6 +146,45 @@ function Dashboard() {
       setTitle("快乐阅读伴学课");
     }
     setShowCreate(true);
+  };
+  const openTaskForm = () => {
+    const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    setTaskForm({ title: "", detail: "", studentId: students[0]?.id ?? "", dueDate: tomorrow });
+    setTaskError("");
+    setShowTaskForm(true);
+  };
+  const createTask = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (savingTask) return;
+    if (!taskForm.title.trim() || !taskForm.studentId) {
+      setTaskError("请填写任务名称并选择学生");
+      return;
+    }
+    setSavingTask(true);
+    setTaskError("");
+    try {
+      const task = await api<LearningTask>("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify(taskForm)
+      });
+      setTasks((current) => [task, ...current]);
+      setShowTaskForm(false);
+    } catch (reason) {
+      setTaskError(reason instanceof Error ? reason.message : "任务布置失败");
+    } finally {
+      setSavingTask(false);
+    }
+  };
+  const changeTaskStatus = async (task: LearningTask) => {
+    try {
+      const updated = await api<LearningTask>(`/api/tasks/${task.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: task.status === "completed" ? "pending" : "completed" })
+      });
+      setTasks((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "任务状态更新失败");
+    }
   };
 
   const createRoom = async (event: React.FormEvent) => {
@@ -212,6 +258,16 @@ function Dashboard() {
           {!groups.length && <Card className="subpage-empty">目前没有负责的学生分组，管理员分配后会显示在这里。</Card>}
         </div>
       </section>}
+      {activeTab === "学习任务" && <section className="teacher-subpage">
+        <div className="page-heading"><div><small>LEARNING TASKS</small><h1>学习任务</h1><p>由教师布置并确认完成，学生端只能查看任务状态。</p></div><Button onClick={openTaskForm}>＋ 布置任务</Button></div>
+        {error && <p className="error">{error}</p>}
+        <div className="task-stat-row"><Card><small>任务总数</small><strong>{tasks.length}</strong></Card><Card><small>待确认</small><strong>{tasks.filter(({ status }) => status === "pending").length}</strong></Card><Card><small>已完成</small><strong>{tasks.filter(({ status }) => status === "completed").length}</strong></Card></div>
+        <Card className="teacher-task-card">
+          <div className="teacher-task-row teacher-task-head"><span>任务</span><span>学生</span><span>截止日期</span><span>状态</span><span>教师操作</span></div>
+          {tasks.map((task) => <div className="teacher-task-row" key={task.id}><div><b>{task.title}</b><small>{task.detail || "暂无任务说明"}</small></div><span>{task.student?.name ?? "学生"}</span><span>{task.dueDate ? new Date(task.dueDate).toLocaleDateString("zh-CN") : "未设置"}</span><span className={`task-status ${task.status}`}>{task.status === "completed" ? "已完成" : "等待确认"}</span><button className={task.status === "completed" ? "reopen" : ""} onClick={() => void changeTaskStatus(task)}>{task.status === "completed" ? "重新打开" : "确认完成"}</button></div>)}
+          {!tasks.length && <div className="subpage-empty">还没有学习任务，点击“布置任务”开始安排。</div>}
+        </Card>
+      </section>}
       {activeTab === "课堂记录" && <section className="teacher-subpage">
         <div className="page-heading"><div><small>CLASS RECORDS</small><h1>课堂记录</h1><p>查看课堂状态、参与学生和上课时间。</p></div></div>
         <Card className="record-card">
@@ -229,6 +285,7 @@ function Dashboard() {
         </Card>
       </section>}
       {showCreate && <div className="modal-backdrop"><form className="modal" onSubmit={createRoom}><button type="button" className="modal-close" disabled={creating} onClick={() => setShowCreate(false)}>×</button><small>NEW CLASSROOM</small><h2>创建伴学课堂</h2><label>课堂名称<Input value={title} disabled={creating} onChange={(event) => setTitle(event.target.value)} /></label><fieldset disabled={creating}><legend>邀请学生 · 已选 {selected.length} 人</legend>{students.map((student) => <label className="check-row" key={student.id}><input type="checkbox" checked={selected.includes(student.id)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, student.id] : current.filter((id) => id !== student.id))} /><span>{student.name}</span><small>{student.email}</small></label>)}</fieldset>{modalError && <p className="modal-error" role="alert">⚠ {modalError}</p>}<Button type="submit" disabled={creating}>{creating ? "正在创建课堂…" : "创建并进入课堂"}</Button></form></div>}
+      {showTaskForm && <div className="modal-backdrop"><form className="modal task-modal" onSubmit={createTask}><button type="button" className="modal-close" disabled={savingTask} onClick={() => setShowTaskForm(false)}>×</button><small>NEW LEARNING TASK</small><h2>布置学习任务</h2><label>任务名称<Input value={taskForm.title} disabled={savingTask} placeholder="例如：朗读课文第 3 课" onChange={(event) => setTaskForm((current) => ({ ...current, title: event.target.value }))} /></label><label>任务说明<Input value={taskForm.detail} disabled={savingTask} placeholder="写清楚完成要求" onChange={(event) => setTaskForm((current) => ({ ...current, detail: event.target.value }))} /></label><label>选择学生<select value={taskForm.studentId} disabled={savingTask} onChange={(event) => setTaskForm((current) => ({ ...current, studentId: event.target.value }))}><option value="">请选择学生</option>{students.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}</select></label><label>截止日期<Input type="date" value={taskForm.dueDate} disabled={savingTask} onChange={(event) => setTaskForm((current) => ({ ...current, dueDate: event.target.value }))} /></label>{taskError && <p className="modal-error" role="alert">⚠ {taskError}</p>}<Button type="submit" disabled={savingTask}>{savingTask ? "正在布置…" : "确认布置任务"}</Button></form></div>}
     </Shell>
   );
 }

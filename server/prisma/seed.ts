@@ -36,6 +36,43 @@ async function main() {
     where: { userId: student.id },
     data: { groupId: group.id }
   });
+  const taskCount = await prisma.learningTask.count({
+    where: { teacherId: teacher.id, studentId: student.id }
+  });
+  if (!taskCount) {
+    const dueDate = new Date();
+    dueDate.setHours(23, 59, 59, 999);
+    await prisma.learningTask.createMany({
+      data: [
+        {
+          title: "晨读 15 分钟",
+          detail: "大声朗读今天喜欢的故事",
+          teacherId: teacher.id,
+          studentId: student.id,
+          status: "completed",
+          dueDate,
+          completedAt: new Date()
+        },
+        {
+          title: "完成数学练习",
+          detail: "认真检查每一道题",
+          teacherId: teacher.id,
+          studentId: student.id,
+          status: "completed",
+          dueDate,
+          completedAt: new Date()
+        },
+        {
+          title: "整理错题本",
+          detail: "把今天的新发现记下来",
+          teacherId: teacher.id,
+          studentId: student.id,
+          status: "pending",
+          dueDate
+        }
+      ]
+    });
+  }
   console.log(`Seed complete: ${admin.email}, ${teacher.email}, ${student.email}`);
 }
 

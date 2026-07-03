@@ -37,6 +37,23 @@ export interface Courseware {
   createdAt: string;
 }
 
+export type LearningTaskStatus = "pending" | "completed";
+
+export interface LearningTask {
+  id: string;
+  title: string;
+  detail?: string | null;
+  status: LearningTaskStatus;
+  teacherId: string;
+  studentId: string;
+  dueDate?: string | null;
+  completedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  teacher?: Pick<User, "id" | "name">;
+  student?: Pick<User, "id" | "name" | "email">;
+}
+
 export const MESSAGE_ACTIONS = {
   ROOM_EVENT: [
     "JOIN_ROOM", "LEAVE_ROOM", "ROOM_STARTED", "ROOM_ENDED",

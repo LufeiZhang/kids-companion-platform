@@ -23,6 +23,14 @@
 - `POST /api/rooms/:id/start`：房间教师开启
 - `POST /api/rooms/:id/end`：房间教师结束
 
+## 学习任务
+
+- `GET /api/tasks`：学生查看自己的任务；教师查看自己布置的任务
+- `POST /api/tasks`：教师布置任务，body 为 `{ title, detail, studentId, dueDate }`
+- `PATCH /api/tasks/:id/status`：仅任务所属教师可确认完成或重新打开，body 为 `{ status: "completed" | "pending" }`
+
+学生端没有任务状态写入接口，不能自行确认完成。
+
 ## 课件
 
 - `GET /api/courseware`：教师自己的课件

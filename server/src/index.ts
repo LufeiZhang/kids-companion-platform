@@ -10,6 +10,7 @@ import { classesRouter } from "./classes/routes.js";
 import { groupsRouter } from "./classes/groups.js";
 import { coursewareRouter } from "./courseware/routes.js";
 import { logsRouter } from "./logs/routes.js";
+import { tasksRouter } from "./tasks/routes.js";
 import { createSocketGateway } from "./websocket/gateway.js";
 import { prisma } from "./database/client.js";
 
@@ -38,6 +39,7 @@ app.use("/api/rooms", classesRouter);
 app.use("/api/groups", groupsRouter);
 app.use("/api/courseware", coursewareRouter);
 app.use("/api/logs", logsRouter);
+app.use("/api/tasks", tasksRouter);
 
 const workspaceRoot = path.basename(process.cwd()) === "server" ? path.resolve("..") : process.cwd();
 const frontends = [

@@ -4,7 +4,7 @@ import type { Socket } from "socket.io-client";
 import { api, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, CoursewarePayload, RTCAction, RTCSignalPayload, RewardPayload,
+  Classroom, CoursewarePayload, LearningTask, RTCAction, RTCSignalPayload, RewardPayload,
   SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
@@ -15,21 +15,6 @@ import "./styles.css";
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
 type StudentView = "home" | "tasks" | "treasure";
-
-const DAILY_TASKS = [
-  { id: "reading", icon: "📖", title: "晨读 15 分钟", detail: "大声朗读今天喜欢的故事" },
-  { id: "math", icon: "✏️", title: "完成数学练习", detail: "认真检查每一道题" },
-  { id: "review", icon: "🌱", title: "整理错题本", detail: "把今天的新发现记下来" }
-];
-
-function getSavedTasks() {
-  try {
-    const saved = JSON.parse(localStorage.getItem("student-daily-tasks") ?? '["reading","math"]');
-    return Array.isArray(saved) ? saved as string[] : ["reading", "math"];
-  } catch {
-    return ["reading", "math"];
-  }
-}
 
 function Login() {
   const [email, setEmail] = useState("student@example.com");
@@ -62,19 +47,19 @@ function Login() {
 function StudentHome() {
   const user = session.user!;
   const [rooms, setRooms] = useState<Classroom[]>([]);
+  const [tasks, setTasks] = useState<LearningTask[]>([]);
   const [error, setError] = useState("");
   const [activeView, setActiveView] = useState<StudentView>("home");
-  const [completedTasks, setCompletedTasks] = useState<string[]>(getSavedTasks);
   useEffect(() => {
-    void api<Classroom[]>("/api/rooms").then(setRooms).catch((reason: Error) => setError(reason.message));
+    void Promise.all([
+      api<Classroom[]>("/api/rooms"),
+      api<LearningTask[]>("/api/tasks")
+    ]).then(([roomData, taskData]) => {
+      setRooms(roomData);
+      setTasks(taskData);
+    }).catch((reason: Error) => setError(reason.message));
   }, []);
-  const toggleTask = (taskId: string) => {
-    setCompletedTasks((current) => {
-      const next = current.includes(taskId) ? current.filter((id) => id !== taskId) : [...current, taskId];
-      localStorage.setItem("student-daily-tasks", JSON.stringify(next));
-      return next;
-    });
-  };
+  const completedTasks = tasks.filter(({ status }) => status === "completed");
   const showTodayClasses = () => {
     document.querySelector<HTMLElement>(".today-class")?.scrollIntoView({
       behavior: "smooth",
@@ -90,7 +75,7 @@ function StudentHome() {
         {error && <p className="error">{error}</p>}
         <section className="summary-row">
           <button className="summary-link" onClick={showTodayClasses}><Card><span className="summary-icon blue">📅</span><div><small>今日课程</small><strong>{rooms.filter((room) => room.status !== "ended").length}<i>节</i></strong><p>{nextRoom ? "准备好了吗？" : "今天没有待上课程"}</p></div><i className="summary-arrow">›</i></Card></button>
-          <button className="summary-link" onClick={() => setActiveView("tasks")}><Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>{completedTasks.length}<i>/ {DAILY_TASKS.length}</i></strong><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成，你真棒！" : `再完成 ${DAILY_TASKS.length - completedTasks.length} 个就全部完成啦`}</p></div><i className="summary-arrow">›</i></Card></button>
+          <button className="summary-link" onClick={() => setActiveView("tasks")}><Card><span className="summary-icon yellow">✅</span><div><small>今日任务</small><strong>{completedTasks.length}<i>/ {tasks.length}</i></strong><p>{tasks.length && completedTasks.length === tasks.length ? "全部完成，你真棒！" : tasks.length ? `还有 ${tasks.length - completedTasks.length} 个等待老师确认` : "老师还没有布置任务"}</p></div><i className="summary-arrow">›</i></Card></button>
           <button className="summary-link" onClick={() => setActiveView("treasure")}><Card><span className="summary-icon pink">⭐</span><div><small>我的积分</small><strong>128<i>颗</i></strong><p>本周已经获得 36 颗</p></div><i className="summary-arrow">›</i></Card></button>
           <button className="summary-link" onClick={() => setActiveView("treasure")}><Card><span className="summary-icon purple">🏅</span><div><small>我的徽章</small><strong>6<i>枚</i></strong><p>距离新徽章还差一点点</p></div><i className="summary-arrow">›</i></Card></button>
         </section>
@@ -102,14 +87,15 @@ function StudentHome() {
         </div>
       </main>}
       {activeView === "tasks" && <main className="student-subpage">
-        <section className="subpage-hero tasks-hero"><div><small>DAILY ADVENTURE</small><h1>今天的学习任务</h1><p>每完成一个小任务，就点亮一颗成长星星 ✨</p></div><span>🗺️</span></section>
+        <section className="subpage-hero tasks-hero"><div><small>DAILY ADVENTURE</small><h1>老师布置的学习任务</h1><p>认真完成后告诉老师，由老师确认完成 ✨</p></div><span>🗺️</span></section>
         <Card className="task-list-card">
-          <div className="task-progress"><div><h3>今日进度</h3><p>{completedTasks.length === DAILY_TASKS.length ? "全部完成！今天的你闪闪发光。" : "一步一步来，你已经做得很好啦。"}</p></div><strong>{completedTasks.length} / {DAILY_TASKS.length}</strong></div>
-          <div className="progress-track"><i style={{ width: `${completedTasks.length / DAILY_TASKS.length * 100}%` }} /></div>
-          {DAILY_TASKS.map((task) => {
-            const done = completedTasks.includes(task.id);
-            return <button className={`task-item ${done ? "done" : ""}`} key={task.id} onClick={() => toggleTask(task.id)}><span className="task-icon">{task.icon}</span><div><b>{task.title}</b><small>{task.detail}</small></div><i className="task-check">{done ? "✓" : ""}</i></button>;
+          <div className="task-progress"><div><h3>任务进度</h3><p>{tasks.length && completedTasks.length === tasks.length ? "全部完成！今天的你闪闪发光。" : "任务状态由老师确认，你只需要认真完成。"}</p></div><strong>{completedTasks.length} / {tasks.length}</strong></div>
+          <div className="progress-track"><i style={{ width: `${tasks.length ? completedTasks.length / tasks.length * 100 : 0}%` }} /></div>
+          {tasks.map((task, index) => {
+            const done = task.status === "completed";
+            return <div className={`task-item ${done ? "done" : ""}`} key={task.id}><span className="task-icon">{["📖", "✏️", "🌱", "🧠"][index % 4]}</span><div><b>{task.title}</b><small>{task.detail || "认真完成老师布置的任务"}</small><em className="task-owner">{done ? `✓ ${task.teacher?.name ?? "老师"}已确认完成` : `🔒 等待${task.teacher?.name ?? "老师"}确认`}</em></div><i className="task-check">{done ? "✓" : "·"}</i></div>;
           })}
+          {!tasks.length && <div className="home-empty">老师还没有布置任务，先去读一本喜欢的书吧 📚</div>}
         </Card>
       </main>}
       {activeView === "treasure" && <main className="student-subpage">
