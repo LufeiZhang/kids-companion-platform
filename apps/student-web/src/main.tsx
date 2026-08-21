@@ -267,6 +267,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   return (
     <RTCProvider
       initiator={false}
+      peerIds={room.teacherId ? [room.teacherId] : []}
       incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
       sendRTC={sendRTC}
     >

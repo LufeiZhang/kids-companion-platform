@@ -290,21 +290,29 @@ function Dashboard() {
   );
 }
 
-function TeacherVideoPanel({ studentName, studentState, handRaised, emoji, emojiKey }: {
+function TeacherVideoPanel({ studentId, studentName, studentState, selected, onSelect, handRaised, emoji, emojiKey }: {
+  studentId: string;
   studentName: string;
   studentState: "online" | "hidden" | "offline";
+  selected: boolean;
+  onSelect(): void;
   handRaised?: boolean;
   emoji?: string;
   emojiKey?: number;
 }) {
+  return (
+    <button type="button" className={`student-video-card ${selected ? "selected" : ""}`} onClick={onSelect}>
+      <VideoTile label={studentName} peerId={studentId} />
+      {emoji && <div className="teacher-emoji-pop" key={emojiKey}>{emoji}</div>}
+      <div className="student-state"><b>{studentName}</b><div>{selected && <span className="target-badge">当前目标</span>}{handRaised && <span className="hand-raised">✋ 已举手</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
+    </button>
+  );
+}
+
+function TeacherRTCControls() {
   const rtc = useRTC();
   return (
-    <>
-      <div className="student-video-card">
-        <VideoTile label={studentName} />
-        {emoji && <div className="teacher-emoji-pop" key={emojiKey}>{emoji}</div>}
-        <div className="student-state"><b>{studentName}</b><div>{handRaised && <span className="hand-raised">✋ 已举手</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
-      </div>
+    <div className="teacher-self-card">
       <div className="teacher-local-video"><VideoTile label="我的画面" source="local" muted /></div>
       <div className="teacher-rtc-controls">
         <button className={rtc.cameraOn ? "active" : ""} onClick={() => void rtc.toggleCamera()}>{rtc.cameraOn ? "📹 关闭摄像头" : "📷 开启摄像头"}</button>
@@ -312,7 +320,7 @@ function TeacherVideoPanel({ studentName, studentState, handRaised, emoji, emoji
       </div>
       <small className="rtc-privacy">🔒 仅用于本次课堂通话，不录音录像</small>
       {rtc.error && <div className="teacher-rtc-error">⚠ {rtc.error}</div>}
-    </>
+    </div>
   );
 }
 
@@ -328,25 +336,33 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [notice, setNotice] = useState("");
   const [raisedHands, setRaisedHands] = useState<Record<string, boolean>>({});
   const [studentEmoji, setStudentEmoji] = useState<{ uid: string; emoji: string; id: number } | null>(null);
+  const [selectedStudentId, setSelectedStudentId] = useState("");
   useEffect(() => {
     if (!studentEmoji) return;
     const timer = setTimeout(() => setStudentEmoji(null), 2200);
     return () => clearTimeout(timer);
   }, [studentEmoji]);
 
-  const target = room?.students[0]?.student;
-  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload) => {
+  const classroomStudents = useMemo(() => room?.students.map(({ student }) => student) ?? [], [room]);
+  const selectedTarget = classroomStudents.find(({ id }) => id === selectedStudentId) ?? classroomStudents[0];
+  useEffect(() => {
+    const firstStudent = classroomStudents[0];
+    if (!firstStudent) return;
+    if (!classroomStudents.some(({ id }) => id === selectedStudentId)) setSelectedStudentId(firstStudent.id);
+  }, [classroomStudents, selectedStudentId]);
+
+  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload, targetUid?: string) => {
     const socket = socketRef.current;
-    if (!socket || !target) return;
+    if (!socket || !targetUid) return;
     void sendSignal(socket, createSignal({
       msg_type: "RTC_SIGNAL",
       action,
       room_id: roomId,
       from_uid: user.id,
-      target_uid: target.id,
+      target_uid: targetUid,
       payload
     }));
-  }, [roomId, target?.id, user.id]);
+  }, [roomId, user.id]);
   const makeSignal = <T,>(msgType: SignalMessage["msg_type"], action: SignalMessage["action"], payload: T, targetUid?: string) =>
     createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, target_uid: targetUid, payload });
   const emit = async (message: SignalMessage<unknown>) => {
@@ -437,21 +453,21 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     }
   };
   const reward = (rewardType: RewardPayload["reward_type"], message: string) => {
-    if (!target) return;
+    if (!selectedTarget) return;
     void emit(makeSignal("TEACHER_CONTROL", "GRANT_REWARD", {
       reward_type: rewardType,
       animation: rewardType,
       message,
       duration: 3200
-    } satisfies RewardPayload, target.id));
-    setNotice(`已向 ${target.name} 发送奖励`);
+    } satisfies RewardPayload, selectedTarget.id));
+    setNotice(`已向 ${selectedTarget.name} 发送奖励`);
   };
   const focus = () => {
-    if (!target) return;
+    if (!selectedTarget) return;
     void emit(makeSignal("TEACHER_CONTROL", "FOCUS_REMINDER", {
       message: "小眼睛看回来啦，我们继续专心学习哦！", duration: 4000
-    }, target.id));
-    setNotice("专注提醒已发送");
+    }, selectedTarget.id));
+    setNotice(`已提醒 ${selectedTarget.name} 专注`);
   };
   const endClass = async () => {
     if (!confirm("确定结束本次课堂吗？学生端会立即收到结束提示。")) return;
@@ -464,6 +480,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   return (
     <RTCProvider
       initiator
+      peerIds={classroomStudents.map(({ id }) => id)}
       incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
       sendRTC={sendRTC}
     >
@@ -485,11 +502,33 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           </section>
           <aside className="classroom-aside">
             <div className="aside-block">
-              <div className="aside-heading"><b>学生状态</b><span>{target ? "1 人" : "0 人"}</span></div>
-              {target && <TeacherVideoPanel studentName={target.name} studentState={online[target.id] ?? "offline"} handRaised={raisedHands[target.id]} emoji={studentEmoji?.uid === target.id ? studentEmoji.emoji : undefined} emojiKey={studentEmoji?.id} />}
+              <div className="aside-heading"><b>学生状态</b><span>{classroomStudents.length} 人</span></div>
+              <div className="student-video-list">
+                {classroomStudents.map((student) => (
+                  <TeacherVideoPanel
+                    key={student.id}
+                    studentId={student.id}
+                    studentName={student.name}
+                    selected={selectedTarget?.id === student.id}
+                    onSelect={() => setSelectedStudentId(student.id)}
+                    studentState={online[student.id] ?? "offline"}
+                    handRaised={raisedHands[student.id]}
+                    emoji={studentEmoji?.uid === student.id ? studentEmoji.emoji : undefined}
+                    emojiKey={studentEmoji?.id}
+                  />
+                ))}
+              </div>
+              {!classroomStudents.length && <div className="classroom-empty">本课堂还没有学生</div>}
             </div>
             <div className="aside-block">
-              <div className="aside-heading"><b>即时鼓励</b><small>选择一份奖励</small></div>
+              <div className="aside-heading"><b>我的音视频</b><small>老师画面</small></div>
+              <TeacherRTCControls />
+            </div>
+            <div className="aside-block">
+              <div className="aside-heading"><b>即时鼓励</b><small>发送给选中学生</small></div>
+              <select className="target-select" value={selectedTarget?.id ?? ""} onChange={(event) => setSelectedStudentId(event.target.value)}>
+                {classroomStudents.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
+              </select>
               <div className="reward-grid">
                 <button onClick={() => reward("red_flower", "你真棒！继续加油！")}><span>🌸</span>小红花</button>
                 <button onClick={() => reward("trophy", "太出色啦！这是你的奖杯！")}><span>🏆</span>奖杯</button>
@@ -497,8 +536,8 @@ function ClassroomPage({ roomId }: { roomId: string }) {
                 <button onClick={() => reward("star_rain", "每一颗星星都为你闪亮！")}><span>⭐</span>星星雨</button>
               </div>
             </div>
-            <div className="aside-block focus-block"><div><span>🎯</span><b>专注提醒</b><small>温和提醒学生回到学习页面</small></div><Button onClick={focus}>发送提醒</Button></div>
-            <div className="rtc-note"><b>音视频通话</b><p>RTCProvider 已预留 Agora / TRTC / WebRTC 适配接口。MVP 当前显示安全占位画面。</p></div>
+            <div className="aside-block focus-block"><div><span>🎯</span><b>专注提醒</b><small>发送给 {selectedTarget?.name ?? "选中学生"}</small></div><Button onClick={focus} disabled={!selectedTarget}>发送提醒</Button></div>
+            <div className="rtc-note"><b>音视频通话</b><p>已支持老师同时查看多个学生摄像头；每个学生会建立独立 WebRTC 连接。</p></div>
           </aside>
         </main>
         {notice && <div className="toast" onAnimationEnd={() => setNotice("")}>{notice}</div>}
