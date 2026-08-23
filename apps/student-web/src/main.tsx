@@ -4,8 +4,8 @@ import type { Socket } from "socket.io-client";
 import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask, RTCAction, RTCSignalPayload, RewardPayload,
-  SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
+  Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask, PomodoroPayload, RTCAction,
+  RTCSignalPayload, RewardPayload, SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, Input } from "@companion/ui";
@@ -15,6 +15,23 @@ import "./styles.css";
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
 type StudentView = "home" | "tasks" | "treasure";
+const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
+const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
+  if (!pomodoro) return 0;
+  if (pomodoro.status === "running" && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
+  return Math.max(0, pomodoro.remainingSeconds ?? pomodoro.durationSeconds ?? 0);
+};
+const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
+  if (!room.pomodoroStatus || room.pomodoroStatus === "stopped") return null;
+  return {
+    status: room.pomodoroStatus,
+    durationSeconds: room.pomodoroDurationSeconds ?? 0,
+    startedAt: room.pomodoroStartedAt ? new Date(room.pomodoroStartedAt).getTime() : undefined,
+    endsAt: room.pomodoroEndsAt ? new Date(room.pomodoroEndsAt).getTime() : undefined,
+    remainingSeconds: room.pomodoroRemainingSeconds ?? undefined,
+    label: room.pomodoroLabel ?? undefined
+  };
+};
 
 function Login() {
   const [email, setEmail] = useState("student@example.com");
@@ -146,6 +163,22 @@ function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePay
   );
 }
 
+function StudentPomodoroPanel({ pomodoro, remainingSeconds, finishedEarly, onFinishEarly }: {
+  pomodoro: PomodoroPayload | null;
+  remainingSeconds: number;
+  finishedEarly: boolean;
+  onFinishEarly(): void;
+}) {
+  if (!pomodoro || pomodoro.status === "stopped") return null;
+  const status = pomodoro.status === "running" && remainingSeconds <= 0 ? "completed" : pomodoro.status;
+  return (
+    <div className={`student-pomodoro ${status}`}>
+      <div><span>🍅</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注时间进行中" : status === "paused" ? "老师暂停了番茄钟" : "本轮番茄钟完成啦"}</small></div>
+      <button disabled={status !== "running" || finishedEarly} onClick={onFinishEarly}>{finishedEarly ? "已举手等待老师" : "我提前完成了，举手"}</button>
+    </div>
+  );
+}
+
 function ClassroomControls({ sendStatus, sendInteraction }: {
   sendStatus(action: StudentStatusAction): void;
   sendInteraction(action: StudentInteractionAction, payload: StudentInteractionPayload): Promise<boolean>;
@@ -200,9 +233,17 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const [courseware, setCourseware] = useState<{ url?: string; type?: "image" | "pdf" }>({});
   const [reward, setReward] = useState<RewardPayload | null>(null);
   const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
+  const [pomodoro, setPomodoro] = useState<PomodoroPayload | null>(null);
+  const [pomodoroFinishedEarly, setPomodoroFinishedEarly] = useState(false);
+  const [timerNow, setTimerNow] = useState(Date.now());
   const [focusMessage, setFocusMessage] = useState("");
   const [ended, setEnded] = useState(false);
   const [connection, setConnection] = useState("正在连接老师…");
+  useEffect(() => {
+    const timer = setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const pomodoroRemaining = remainingPomodoroSeconds(pomodoro, timerNow);
 
   const message = <T,>(msgType: SignalMessage["msg_type"], action: SignalMessage["action"], payload: T, targetUid?: string) =>
     createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, target_uid: targetUid, payload });
@@ -250,6 +291,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         url: `${API_URL}${data.courseware.fileUrl}`,
         type: data.courseware.type
       } : {});
+      setPomodoro(pomodoroFromRoom(data));
       if (data.status === "ended") setEnded(true);
     }).catch(() => setEnded(true));
     const socket = connectSocket();
@@ -278,18 +320,51 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       if (signal.msg_type === "CLASSROOM_PRAISE") {
         setClassroomPraise(signal.payload as unknown as ClassroomPraisePayload);
       }
+      if (signal.msg_type === "POMODORO_CONTROL") {
+        const payload = signal.payload as unknown as PomodoroPayload;
+        setPomodoro(payload);
+        if (signal.action === "START_POMODORO" || signal.action === "RESUME_POMODORO") setPomodoroFinishedEarly(false);
+      }
       if (signal.msg_type === "ROOM_EVENT" && signal.action === "ROOM_ENDED") setEnded(true);
     });
     const visibility = () => sendStatus(document.hidden ? "PAGE_HIDDEN" : "PAGE_VISIBLE");
     document.addEventListener("visibilitychange", visibility);
     const beforeUnload = () => send(message("ROOM_EVENT", "LEAVE_ROOM", {}));
     window.addEventListener("beforeunload", beforeUnload);
+    let lastActiveAt = Date.now();
+    let idleSent = false;
+    const markActive = () => {
+      lastActiveAt = Date.now();
+      if (idleSent) {
+        sendStatus("ACTIVE");
+        idleSent = false;
+      }
+    };
+    const idleTimer = setInterval(() => {
+      if (!idleSent && Date.now() - lastActiveAt > 2 * 60 * 1000) {
+        sendStatus("IDLE");
+        idleSent = true;
+      }
+    }, 30000);
+    ["pointerdown", "keydown", "touchstart"].forEach((eventName) => window.addEventListener(eventName, markActive));
     return () => {
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("beforeunload", beforeUnload);
+      clearInterval(idleTimer);
+      ["pointerdown", "keydown", "touchstart"].forEach((eventName) => window.removeEventListener(eventName, markActive));
       socket.disconnect();
     };
   }, [roomId]);
+
+  const finishPomodoroEarly = async () => {
+    if (pomodoroFinishedEarly) return;
+    if (await sendInteraction("POMODORO_FINISHED_EARLY", {
+      finished_early: true,
+      remainingSeconds: pomodoroRemaining
+    })) {
+      setPomodoroFinishedEarly(true);
+    }
+  };
 
   if (!room) return <div className="kid-loading"><span>⭐</span>正在飞往课堂…</div>;
   return (
@@ -305,6 +380,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
           <div className="teacher-pip"><VideoTile label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
           <div className="student-self-pip"><VideoTile label="我的画面" source="local" muted /></div>
+          <StudentPomodoroPanel pomodoro={pomodoro} remainingSeconds={pomodoroRemaining} finishedEarly={pomodoroFinishedEarly} onFinishEarly={() => void finishPomodoroEarly()} />
           <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} />
           <StudentVideoError />
         </main>

@@ -4,8 +4,8 @@ import type { Socket } from "socket.io-client";
 import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, ClassroomPraisePayload, Courseware, CoursewarePayload, DrawPayload, LearningTask, RewardPayload,
-  RTCAction, RTCSignalPayload, SignalMessage, StudentInteractionPayload,
+  ClassSessionReport, Classroom, ClassroomPraisePayload, Courseware, CoursewarePayload, DrawPayload,
+  LearningTask, PomodoroPayload, RewardPayload, RTCAction, RTCSignalPayload, SignalMessage, StudentInteractionPayload,
   User, WhiteboardAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
@@ -34,6 +34,24 @@ interface TeacherReward {
 
 const rewardIcon = (type: string) => type === "red_flower" ? "🌸" : type === "trophy" ? "🏆" : type === "confetti" ? "🎉" : type === "task_praise" ? "👏" : "⭐";
 const rewardLabel = (type: string) => type === "red_flower" ? "小红花" : type === "trophy" ? "奖杯" : type === "confetti" ? "彩带" : type === "task_praise" ? "任务表扬" : "星星雨";
+const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
+const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
+const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
+  if (!pomodoro) return 0;
+  if (pomodoro.status === "running" && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
+  return Math.max(0, pomodoro.remainingSeconds ?? pomodoro.durationSeconds ?? 0);
+};
+const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
+  if (!room.pomodoroStatus || room.pomodoroStatus === "stopped") return null;
+  return {
+    status: room.pomodoroStatus,
+    durationSeconds: room.pomodoroDurationSeconds ?? 0,
+    startedAt: room.pomodoroStartedAt ? new Date(room.pomodoroStartedAt).getTime() : undefined,
+    endsAt: room.pomodoroEndsAt ? new Date(room.pomodoroEndsAt).getTime() : undefined,
+    remainingSeconds: room.pomodoroRemainingSeconds ?? undefined,
+    label: room.pomodoroLabel ?? undefined
+  };
+};
 
 function Login() {
   const [email, setEmail] = useState("teacher@example.com");
@@ -112,6 +130,8 @@ function Dashboard() {
   const [taskError, setTaskError] = useState("");
   const [savingTask, setSavingTask] = useState(false);
   const [taskForm, setTaskForm] = useState({ title: "", detail: "", studentId: "", dueDate: "" });
+  const [reportNotes, setReportNotes] = useState<Record<string, string>>({});
+  const [savingReportId, setSavingReportId] = useState("");
   const load = async () => {
     try {
       const [studentData, roomData, groupData, rewardData, taskData] = await Promise.all([
@@ -187,6 +207,34 @@ function Dashboard() {
       setTasks((current) => current.map((item) => item.id === updated.id ? updated : item));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "任务状态更新失败");
+    }
+  };
+  const updateRoomReports = (roomId: string, reports: ClassSessionReport[]) => {
+    setRooms((current) => current.map((room) => room.id === roomId ? { ...room, sessionReports: reports } : room));
+  };
+  const generateReports = async (room: Classroom) => {
+    try {
+      const reports = await api<ClassSessionReport[]>(`/api/rooms/${room.id}/reports/generate`, { method: "POST" });
+      updateRoomReports(room.id, reports);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "课后记录生成失败");
+    }
+  };
+  const saveReportNote = async (roomId: string, report: ClassSessionReport) => {
+    setSavingReportId(report.id);
+    try {
+      const updated = await api<ClassSessionReport>(`/api/rooms/${roomId}/reports/${report.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ teacherNotes: reportNotes[report.id] ?? report.teacherNotes ?? "" })
+      });
+      setRooms((current) => current.map((room) => room.id === roomId ? {
+        ...room,
+        sessionReports: (room.sessionReports ?? []).map((item) => item.id === updated.id ? updated : item)
+      } : room));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "教师备注保存失败");
+    } finally {
+      setSavingReportId("");
     }
   };
 
@@ -275,7 +323,20 @@ function Dashboard() {
         <div className="page-heading"><div><small>CLASS RECORDS</small><h1>课堂记录</h1><p>查看课堂状态、参与学生和上课时间。</p></div></div>
         <Card className="record-card">
           <div className="record-table record-head"><span>课堂</span><span>学生</span><span>状态</span><span>开始时间</span><span>操作</span></div>
-          {rooms.map((room) => <div className="record-table" key={room.id}><div><b>{room.title}</b><small>课堂编号 {room.id.slice(0, 8)}</small></div><span>{room.students.map(({ student }) => student.name).join("、") || "—"}</span><span className={`record-status ${room.status}`}>{room.status === "active" ? "进行中" : room.status === "ended" ? "已结束" : "待开始"}</span><span>{room.startedAt ? new Date(room.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "尚未开始"}</span><button disabled={room.status === "ended"} onClick={() => { location.href = appUrl(`classroom/${room.id}`); }}>{room.status === "active" ? "进入课堂" : room.status === "ended" ? "已归档" : "开始课堂"}</button></div>)}
+          {rooms.map((room) => <div className="record-block" key={room.id}><div className="record-table"><div><b>{room.title}</b><small>课堂编号 {room.id.slice(0, 8)}</small></div><span>{room.students.map(({ student }) => student.name).join("、") || "—"}</span><span className={`record-status ${room.status}`}>{room.status === "active" ? "进行中" : room.status === "ended" ? "已结束" : "待开始"}</span><span>{room.startedAt ? new Date(room.startedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "尚未开始"}</span><button disabled={room.status === "ended" && Boolean(room.sessionReports?.length)} onClick={() => { room.status === "ended" ? void generateReports(room) : location.href = appUrl(`classroom/${room.id}`); }}>{room.status === "active" ? "进入课堂" : room.status === "ended" ? room.sessionReports?.length ? "已生成" : "生成记录" : "开始课堂"}</button></div>
+            {room.status === "ended" && Boolean(room.sessionReports?.length) && <div className="session-report-list">
+              {room.sessionReports!.map((report) => <div className="session-report-card" key={report.id}>
+                <div className="report-top"><div><small>课后记录</small><h3>{report.student?.name ?? "学生"} · 专注分 {report.focusScore}</h3></div><span className={report.focusScore >= 80 ? "good" : report.focusScore >= 60 ? "mid" : "low"}>{report.focusScore}</span></div>
+                <div className="report-metrics">
+                  <span>上课 {report.durationMinutes} 分钟</span><span>{report.leftPage ? `离开页面 ${report.leftPageCount} 次` : "未离开页面"}</span><span>奖励 {report.rewardCount} 次</span><span>任务 {report.completedTaskCount} 个</span><span>举手 {report.handRaiseCount} 次</span><span>反馈 {report.feedbackCount + report.earlyFinishCount} 次</span>
+                </div>
+                <p className="ai-summary">{report.aiSummary?.studentPerformance ?? report.parentSummary ?? "暂无总结"}</p>
+                <details><summary>查看 AI 课后总结字段</summary><div className="ai-detail"><p><b>学习内容：</b>{report.aiSummary?.learningContent}</p><p><b>注意力：</b>{report.aiSummary?.attention}</p><p><b>下节建议：</b>{report.aiSummary?.nextLessonSuggestion}</p><p><b>家长版：</b>{report.parentSummary}</p></div></details>
+                <label className="teacher-note">教师备注<textarea value={reportNotes[report.id] ?? report.teacherNotes ?? ""} onChange={(event) => setReportNotes((current) => ({ ...current, [report.id]: event.target.value }))} placeholder="补充本节课重点、学生状态或下节课建议" /></label>
+                <button className="save-note" disabled={savingReportId === report.id} onClick={() => void saveReportNote(room.id, report)}>{savingReportId === report.id ? "保存中…" : "保存备注并刷新总结"}</button>
+              </div>)}
+            </div>}
+          </div>)}
           {!rooms.length && <div className="subpage-empty">还没有课堂记录。</div>}
         </Card>
       </section>}
@@ -293,7 +354,7 @@ function Dashboard() {
   );
 }
 
-function TeacherVideoPanel({ studentId, studentName, studentState, selected, onSelect, handRaised, emoji, emojiKey }: {
+function TeacherVideoPanel({ studentId, studentName, studentState, selected, onSelect, handRaised, emoji, emojiKey, pomodoroDone }: {
   studentId: string;
   studentName: string;
   studentState: "online" | "hidden" | "offline";
@@ -302,12 +363,13 @@ function TeacherVideoPanel({ studentId, studentName, studentState, selected, onS
   handRaised?: boolean;
   emoji?: string;
   emojiKey?: number;
+  pomodoroDone?: boolean;
 }) {
   return (
     <button type="button" className={`student-video-card ${selected ? "selected" : ""}`} onClick={onSelect}>
       <VideoTile label={studentName} peerId={studentId} />
       {emoji && <div className="teacher-emoji-pop" key={emojiKey}>{emoji}</div>}
-      <div className="student-state"><b>{studentName}</b><div>{selected && <span className="target-badge">当前目标</span>}{handRaised && <span className="hand-raised">✋ 已举手</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
+      <div className="student-state"><b>{studentName}</b><div>{selected && <span className="target-badge">当前目标</span>}{handRaised && <span className="hand-raised">✋ 已举手</span>}{pomodoroDone && <span className="pomodoro-done">🍅 已提前完成</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
     </button>
   );
 }
@@ -323,6 +385,35 @@ function TeacherRTCControls() {
       </div>
       <small className="rtc-privacy">🔒 仅用于本次课堂通话，不录音录像</small>
       {rtc.error && <div className="teacher-rtc-error">⚠ {rtc.error}</div>}
+    </div>
+  );
+}
+
+function TeacherPomodoroPanel({ minutes, setMinutes, pomodoro, remainingSeconds, doneCount, total, onStart, onPause, onResume, onStop, onFinish }: {
+  minutes: number;
+  setMinutes(value: number): void;
+  pomodoro: PomodoroPayload | null;
+  remainingSeconds: number;
+  doneCount: number;
+  total: number;
+  onStart(): void;
+  onPause(): void;
+  onResume(): void;
+  onStop(): void;
+  onFinish(): void;
+}) {
+  const status = pomodoro?.status ?? "stopped";
+  return (
+    <div className={`pomodoro-panel ${status}`}>
+      <div className="pomodoro-clock"><span>🍅</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注中" : status === "paused" ? "已暂停" : status === "completed" ? "已完成" : "未开始"}</small></div>
+      <label>时长（分钟）<input type="number" min="1" max="120" value={minutes} disabled={status === "running"} onChange={(event) => setMinutes(clampNumber(Number(event.target.value), 1, 120))} /></label>
+      <div className="pomodoro-actions">
+        <button onClick={onStart}>开始</button>
+        <button onClick={status === "paused" ? onResume : onPause} disabled={!pomodoro || status === "stopped" || status === "completed"}>{status === "paused" ? "继续" : "暂停"}</button>
+        <button onClick={onFinish} disabled={!pomodoro || status === "completed" || status === "stopped"}>完成</button>
+        <button onClick={onStop} disabled={!pomodoro || status === "stopped"}>停止</button>
+      </div>
+      <p>{doneCount}/{total} 名学生已提前完成并举手。</p>
     </div>
   );
 }
@@ -362,11 +453,20 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [selectedStudentId, setSelectedStudentId] = useState("");
   const [tasks, setTasks] = useState<LearningTask[]>([]);
   const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
+  const [pomodoroMinutes, setPomodoroMinutes] = useState(25);
+  const [pomodoro, setPomodoro] = useState<PomodoroPayload | null>(null);
+  const [pomodoroDone, setPomodoroDone] = useState<Record<string, boolean>>({});
+  const [timerNow, setTimerNow] = useState(Date.now());
+  const [finishBroadcasted, setFinishBroadcasted] = useState(false);
   useEffect(() => {
     if (!studentEmoji) return;
     const timer = setTimeout(() => setStudentEmoji(null), 2200);
     return () => clearTimeout(timer);
   }, [studentEmoji]);
+  useEffect(() => {
+    const timer = setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const classroomStudents = useMemo(() => room?.students.map(({ student }) => student) ?? [], [room]);
   const selectedTarget = classroomStudents.find(({ id }) => id === selectedStudentId) ?? classroomStudents[0];
@@ -374,6 +474,10 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     () => tasks.filter((task) => task.studentId === selectedTarget?.id),
     [tasks, selectedTarget?.id]
   );
+  const pomodoroRemaining = remainingPomodoroSeconds(pomodoro, timerNow);
+  const visiblePomodoro = pomodoro && pomodoro.status === "running" && pomodoroRemaining <= 0
+    ? { ...pomodoro, status: "completed" as const, remainingSeconds: 0 }
+    : pomodoro;
   useEffect(() => {
     const firstStudent = classroomStudents[0];
     if (!firstStudent) return;
@@ -411,6 +515,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
       setRoom(roomData);
       setCourseware(coursewareData);
       setTasks(taskData);
+      setPomodoro(pomodoroFromRoom(roomData));
       setPage(roomData.currentPage ?? 1);
       setSelectedCourseware(
         roomData.courseware
@@ -446,6 +551,11 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           setRaisedHands((current) => ({ ...current, [message.from_uid]: message.action === "RAISE_HAND" }));
           setNotice(message.action === "RAISE_HAND" ? "学生举手了 ✋" : "学生已放下手");
         }
+        if (message.action === "POMODORO_FINISHED_EARLY") {
+          setPomodoroDone((current) => ({ ...current, [message.from_uid]: true }));
+          setRaisedHands((current) => ({ ...current, [message.from_uid]: true }));
+          setNotice("学生已提前完成本轮番茄钟任务 🍅");
+        }
         if (message.action === "SEND_EMOJI" && payload.emoji) {
           setStudentEmoji({ uid: message.from_uid, emoji: payload.emoji, id: Date.now() });
           setNotice(`学生发送了 ${payload.emoji}`);
@@ -453,6 +563,9 @@ function ClassroomPage({ roomId }: { roomId: string }) {
       }
       if (message.msg_type === "CLASSROOM_PRAISE") {
         setClassroomPraise(message.payload as unknown as ClassroomPraisePayload);
+      }
+      if (message.msg_type === "POMODORO_CONTROL") {
+        setPomodoro(message.payload as unknown as PomodoroPayload);
       }
     });
     return () => { socket.disconnect(); };
@@ -509,6 +622,69 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     }, selectedTarget.id));
     setNotice(`已提醒 ${selectedTarget.name} 专注`);
   };
+  const sendPomodoro = (action: SignalMessage["action"], payload: PomodoroPayload) => {
+    setPomodoro(payload);
+    if (action === "START_POMODORO" || action === "RESUME_POMODORO") setFinishBroadcasted(false);
+    if (action === "START_POMODORO") setPomodoroDone({});
+    void emit(makeSignal("POMODORO_CONTROL", action, payload));
+  };
+  const startPomodoro = () => {
+    const durationSeconds = Math.round(clampNumber(pomodoroMinutes, 1, 120) * 60);
+    const startedAt = Date.now();
+    sendPomodoro("START_POMODORO", {
+      status: "running",
+      durationSeconds,
+      startedAt,
+      endsAt: startedAt + durationSeconds * 1000,
+      remainingSeconds: durationSeconds,
+      label: "课堂番茄钟"
+    });
+    setNotice("已开始全班番茄钟");
+  };
+  const pausePomodoro = () => {
+    if (!pomodoro) return;
+    sendPomodoro("PAUSE_POMODORO", {
+      ...pomodoro,
+      status: "paused",
+      remainingSeconds: pomodoroRemaining,
+      endsAt: undefined
+    });
+  };
+  const resumePomodoro = () => {
+    if (!pomodoro) return;
+    const remainingSeconds = pomodoroRemaining || pomodoro.durationSeconds;
+    const startedAt = Date.now();
+    sendPomodoro("RESUME_POMODORO", {
+      ...pomodoro,
+      status: "running",
+      startedAt,
+      endsAt: startedAt + remainingSeconds * 1000,
+      remainingSeconds
+    });
+  };
+  const stopPomodoro = () => {
+    const durationSeconds = Math.round(clampNumber(pomodoroMinutes, 1, 120) * 60);
+    sendPomodoro("STOP_POMODORO", {
+      status: "stopped",
+      durationSeconds,
+      remainingSeconds: 0,
+      label: "课堂番茄钟"
+    });
+  };
+  const finishPomodoro = () => {
+    if (!pomodoro) return;
+    sendPomodoro("FINISH_POMODORO", {
+      ...pomodoro,
+      status: "completed",
+      remainingSeconds: 0,
+      endsAt: Date.now()
+    });
+  };
+  useEffect(() => {
+    if (!pomodoro || pomodoro.status !== "running" || pomodoroRemaining > 0 || finishBroadcasted) return;
+    setFinishBroadcasted(true);
+    finishPomodoro();
+  }, [pomodoro, pomodoroRemaining, finishBroadcasted]);
   const praiseCompletedTask = async (task: LearningTask) => {
     const student = classroomStudents.find(({ id }) => id === task.studentId);
     if (!student) return;
@@ -581,6 +757,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
                     onSelect={() => setSelectedStudentId(student.id)}
                     studentState={online[student.id] ?? "offline"}
                     handRaised={raisedHands[student.id]}
+                    pomodoroDone={pomodoroDone[student.id]}
                     emoji={studentEmoji?.uid === student.id ? studentEmoji.emoji : undefined}
                     emojiKey={studentEmoji?.id}
                   />
@@ -591,6 +768,22 @@ function ClassroomPage({ roomId }: { roomId: string }) {
             <div className="aside-block">
               <div className="aside-heading"><b>我的音视频</b><small>老师画面</small></div>
               <TeacherRTCControls />
+            </div>
+            <div className="aside-block">
+              <div className="aside-heading"><b>课堂番茄钟</b><small>教师统一控制</small></div>
+              <TeacherPomodoroPanel
+                minutes={pomodoroMinutes}
+                setMinutes={setPomodoroMinutes}
+                pomodoro={visiblePomodoro}
+                remainingSeconds={pomodoroRemaining}
+                doneCount={Object.values(pomodoroDone).filter(Boolean).length}
+                total={classroomStudents.length}
+                onStart={startPomodoro}
+                onPause={pausePomodoro}
+                onResume={resumePomodoro}
+                onStop={stopPomodoro}
+                onFinish={finishPomodoro}
+              />
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>即时鼓励</b><small>发送给选中学生</small></div>

@@ -21,7 +21,10 @@
 - `POST /api/rooms`：教师创建课堂，body 为 `{ title, studentIds }`
 - `GET /api/rooms/:id`：有成员权限时查看
 - `POST /api/rooms/:id/start`：房间教师开启
-- `POST /api/rooms/:id/end`：房间教师结束
+- `POST /api/rooms/:id/end`：房间教师结束；服务端自动生成课后记录
+- `GET /api/rooms/:id/reports`：查看课后记录；学生只能看自己的记录，教师看本课堂全部学生记录
+- `POST /api/rooms/:id/reports/generate`：教师或管理员手动生成/刷新课后记录
+- `PATCH /api/rooms/:id/reports/:reportId`：教师或管理员保存教师备注，并刷新模板 AI 总结，body 为 `{ "teacherNotes": "..." }`
 
 ## 学习任务
 

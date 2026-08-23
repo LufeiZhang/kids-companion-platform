@@ -1,9 +1,16 @@
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { Prisma } from "@prisma/client";
-import { MESSAGE_ACTIONS, type ClassroomPraisePayload, type SignalAck, type SignalMessage } from "@companion/types";
+import {
+  MESSAGE_ACTIONS,
+  type ClassroomPraisePayload,
+  type PomodoroPayload,
+  type SignalAck,
+  type SignalMessage
+} from "@companion/types";
 import { prisma } from "../database/client.js";
 import { verifyToken, type AuthUser } from "../auth/security.js";
+import { generateClassSessionReports } from "../classes/reporting.js";
 
 type Ack = (ack: SignalAck) => void;
 type AuthedSocket = Socket & { data: { user: AuthUser; currentRoom?: string } };
@@ -16,6 +23,25 @@ function isSignalMessage(value: unknown): value is SignalMessage {
   if (!message.msg_id || !message.msg_type || !message.action || !message.room_id || !message.from_uid) return false;
   const actions = MESSAGE_ACTIONS[message.msg_type];
   return Boolean(actions && (actions as readonly string[]).includes(message.action));
+}
+
+function pomodoroPayloadFromRoom(room: {
+  pomodoroStatus: string | null;
+  pomodoroDurationSeconds: number | null;
+  pomodoroStartedAt: Date | null;
+  pomodoroEndsAt: Date | null;
+  pomodoroRemainingSeconds: number | null;
+  pomodoroLabel: string | null;
+}): PomodoroPayload | null {
+  if (!room.pomodoroStatus || room.pomodoroStatus === "stopped") return null;
+  return {
+    status: room.pomodoroStatus as PomodoroPayload["status"],
+    durationSeconds: room.pomodoroDurationSeconds ?? 0,
+    startedAt: room.pomodoroStartedAt?.getTime(),
+    endsAt: room.pomodoroEndsAt?.getTime(),
+    remainingSeconds: room.pomodoroRemainingSeconds ?? undefined,
+    label: room.pomodoroLabel ?? undefined
+  };
 }
 
 async function getRoomAccess(roomId: string, user: AuthUser) {
@@ -88,7 +114,7 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
           return ack({ ok: false, msg_id: message.msg_id, error: "无权访问该课堂" });
         }
 
-        const teacherOnly = ["WHITEBOARD_EVENT", "COURSEWARE_CONTROL", "TEACHER_CONTROL", "CLASSROOM_PRAISE"].includes(message.msg_type)
+        const teacherOnly = ["WHITEBOARD_EVENT", "COURSEWARE_CONTROL", "TEACHER_CONTROL", "CLASSROOM_PRAISE", "POMODORO_CONTROL"].includes(message.msg_type)
           || (message.msg_type === "ROOM_EVENT" && ["ROOM_STARTED", "ROOM_ENDED"].includes(message.action));
         if (teacherOnly && !access.isTeacher) {
           return ack({ ok: false, msg_id: message.msg_id, error: "此操作仅限本课堂教师" });
@@ -117,6 +143,9 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         }
         if (message.msg_type === "CLASSROOM_PRAISE" && message.target_uid) {
           return ack({ ok: false, msg_id: message.msg_id, error: "公开表扬会广播给全课堂，不需要指定目标用户" });
+        }
+        if (message.msg_type === "POMODORO_CONTROL" && message.target_uid) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "番茄钟由教师控制并广播给全课堂，不需要指定目标用户" });
         }
 
         if (message.msg_type === "ROOM_EVENT" && message.action === "JOIN_ROOM") {
@@ -147,6 +176,19 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
                 }
               } satisfies SignalMessage);
             }
+          }
+          const activePomodoro = pomodoroPayloadFromRoom(access.room);
+          if (activePomodoro) {
+            socket.emit("signal", {
+              msg_id: crypto.randomUUID(),
+              msg_type: "POMODORO_CONTROL",
+              action: activePomodoro.status === "paused" ? "PAUSE_POMODORO" : activePomodoro.status === "completed" ? "FINISH_POMODORO" : "START_POMODORO",
+              room_id: message.room_id,
+              from_uid: access.room.teacherId,
+              target_uid: socket.data.user.id,
+              timestamp: Date.now(),
+              payload: activePomodoro
+            } satisfies SignalMessage<PomodoroPayload>);
           }
         }
 
@@ -213,6 +255,21 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
           });
         }
 
+        if (message.msg_type === "POMODORO_CONTROL") {
+          const payload = message.payload as unknown as PomodoroPayload;
+          await prisma.classRoom.update({
+            where: { id: message.room_id },
+            data: {
+              pomodoroStatus: payload.status,
+              pomodoroDurationSeconds: payload.durationSeconds,
+              pomodoroStartedAt: payload.startedAt ? new Date(payload.startedAt) : null,
+              pomodoroEndsAt: payload.endsAt ? new Date(payload.endsAt) : null,
+              pomodoroRemainingSeconds: payload.remainingSeconds ?? null,
+              pomodoroLabel: payload.label ?? null
+            }
+          });
+        }
+
         if (message.msg_type === "ROOM_EVENT" && message.action === "ROOM_STARTED") {
           await prisma.classRoom.update({
             where: { id: message.room_id },
@@ -222,8 +279,14 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         if (message.msg_type === "ROOM_EVENT" && message.action === "ROOM_ENDED") {
           await prisma.classRoom.update({
             where: { id: message.room_id },
-            data: { status: "ended", endedAt: new Date() }
+            data: {
+              status: "ended",
+              endedAt: new Date(),
+              pomodoroStatus: "stopped",
+              pomodoroRemainingSeconds: 0
+            }
           });
+          await generateClassSessionReports(message.room_id).catch(() => undefined);
         }
 
         await saveSignal(message, "ACKED");

@@ -105,9 +105,10 @@ WebRTC 点对点协商使用定向消息，`target_uid` 必填。Offer 与 Answe
 
 ### STUDENT_INTERACTION
 
-`RAISE_HAND`、`LOWER_HAND`、`SEND_EMOJI`
+`RAISE_HAND`、`LOWER_HAND`、`SEND_EMOJI`、`POMODORO_FINISHED_EARLY`
 
 学生举手 payload 为 `{ "raised": true }`，表情 payload 为 `{ "emoji": "😊" }`。
+提前完成本轮番茄钟 payload 为 `{ "finished_early": true, "remainingSeconds": 320 }`。
 消息必须由课堂学生定向发送给本课堂教师；教师端收到后更新学生状态卡或播放表情动画。
 
 ### CLASSROOM_PRAISE
@@ -132,6 +133,25 @@ WebRTC 点对点协商使用定向消息，`target_uid` 必填。Offer 与 Answe
 
 服务端会写入 `SignalLog`，并以 `task_praise` 类型写入 `RewardLog`，便于教师端和管理后台统一查看正向激励记录。
 
+### POMODORO_CONTROL
+
+`START_POMODORO`、`PAUSE_POMODORO`、`RESUME_POMODORO`、`STOP_POMODORO`、`FINISH_POMODORO`
+
+番茄钟仅由本课堂教师控制，广播给全班学生。该消息不填写 `target_uid`，服务端会保存当前番茄钟状态，后来进入课堂的学生也会收到当前状态。
+
+```json
+{
+  "status": "running",
+  "durationSeconds": 1500,
+  "startedAt": 1698765432000,
+  "endsAt": 1698766932000,
+  "remainingSeconds": 1500,
+  "label": "课堂番茄钟"
+}
+```
+
+学生提前完成不直接结束番茄钟，只通过 `STUDENT_INTERACTION/POMODORO_FINISHED_EARLY` 告知教师。
+
 ## 奖励事务顺序
 
 1. 教师发送带目标学生的 `GRANT_REWARD`。
@@ -139,6 +159,16 @@ WebRTC 点对点协商使用定向消息，`target_uid` 必填。Offer 与 Answe
 3. 服务端写 `RewardLog` 与 `SignalLog`。
 4. 服务端只向目标学生 Socket 转发。
 5. 教师收到 ACK；学生播放动画。
+
+## 课后记录与专注分
+
+课堂结束时服务端基于 `SignalLog`、`RewardLog`、`LearningTask` 和课堂成员加入时间生成 `ClassSessionReport`。MVP 专注分是透明规则模板，不代表医学或心理评估：
+
+- 准时进入课堂：加分
+- 页面频繁切出：扣分
+- 完成课堂任务：加分
+- 有举手、表情或番茄钟提前完成反馈：加分
+- 多次长时间无操作：扣分
 
 ## 扩展规则
 

@@ -47,6 +47,8 @@ model User {
   receivedSignals SignalLog[]      @relation("SignalTarget")
   rewardsGiven   RewardLog[]       @relation("RewardTeacher")
   rewardsReceived RewardLog[]      @relation("RewardStudent")
+  reportsAsTeacher ClassSessionReport[] @relation("ReportTeacher")
+  reportsAsStudent ClassSessionReport[] @relation("ReportStudent")
   auditLogs      AdminAuditLog[]   @relation("AdminActor")
   managedGroups  StudentGroup[]    @relation("GroupTeacher")
   tasksAssigned  LearningTask[]    @relation("TaskTeacher")
@@ -110,9 +112,16 @@ model ClassRoom {
   endedAt     DateTime?
   coursewareId String?
   currentPage Int                @default(1)
+  pomodoroStatus String?
+  pomodoroDurationSeconds Int?
+  pomodoroStartedAt DateTime?
+  pomodoroEndsAt DateTime?
+  pomodoroRemainingSeconds Int?
+  pomodoroLabel String?
   whiteboardEvents WhiteboardEvent[]
   signals     SignalLog[]
   rewards     RewardLog[]
+  sessionReports ClassSessionReport[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -192,6 +201,39 @@ model LearningTask {
 
   @@index([teacherId, createdAt])
   @@index([studentId, status])
+}
+
+model ClassSessionReport {
+  id                 String    @id @default(cuid())
+  roomId             String
+  room               ClassRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  teacherId          String
+  teacher            User      @relation("ReportTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+  studentId          String
+  student            User      @relation("ReportStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  startedAt          DateTime?
+  endedAt            DateTime?
+  joinedAt           DateTime?
+  durationMinutes    Int       @default(0)
+  onTime             Boolean   @default(false)
+  leftPage           Boolean   @default(false)
+  leftPageCount      Int       @default(0)
+  rewardCount        Int       @default(0)
+  completedTaskCount Int       @default(0)
+  handRaiseCount     Int       @default(0)
+  feedbackCount      Int       @default(0)
+  earlyFinishCount   Int       @default(0)
+  idleCount          Int       @default(0)
+  focusScore         Int       @default(0)
+  teacherNotes       String?
+  aiSummary          Json?
+  parentSummary      String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([roomId, studentId])
+  @@index([teacherId, createdAt])
+  @@index([studentId, createdAt])
 }
 
 model AdminAuditLog {

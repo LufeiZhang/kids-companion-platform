@@ -27,9 +27,9 @@ flowchart LR
 
 - `auth`：密码校验、12 小时 JWT、REST/Socket 双重身份验证。
 - `users`：管理员创建账号；学生支持加入多个分组；教师只读取任一授权分组内的学生。
-- `classes`：房间生命周期、教师所有权、学生成员授权。
+- `classes`：房间生命周期、教师所有权、学生成员授权、课堂结束课后记录生成。
 - `courseware`：MVP 本地图片/PDF 上传；生产环境替换为 OSS/S3 的预签名上传。
-- `websocket`：验证信令结构、角色、房间归属和目标学生，转发并持久化；课堂公开表扬使用广播信令。
+- `websocket`：验证信令结构、角色、房间归属和目标学生，转发并持久化；课堂公开表扬和番茄钟使用广播信令。
 - `whiteboard`：按页保存笔画，使用 `[0,1]` 比例坐标重绘。
 - `rtc`：业务无关接口；当前为占位实现。
 
@@ -41,6 +41,7 @@ flowchart LR
 | 白板/课件控制 | 否 | 仅自己的课堂 | 否 |
 | 奖励/专注提醒 | 否 | 仅发给课堂内学生 | 否 |
 | 任务公开表扬 | 否 | 仅表扬课堂内学生并广播 | 否 |
+| 番茄钟控制 | 否 | 仅自己的课堂，全班广播 | 否 |
 | 页面状态上报 | 仅本人 | 否 | 否 |
 | 创建账号/分组 | 否 | 否 | 是 |
 | 查看日志 | 否 | 仅自己的课堂 | 全部 |
@@ -49,7 +50,9 @@ Socket 网关不信任客户端的 `from_uid`：必须与 JWT 中用户 ID 完�
 
 ## 5. 数据与一致性
 
-PostgreSQL 保存业务数据。学生多分组通过 `StudentGroupMember` 关系表保存，并保留旧 `StudentProfile.groupId` 作为兼容字段。每条合法信令写入 `SignalLog`；白板信令另写 `WhiteboardEvent`；奖励和任务公开表扬另写 `RewardLog`。客户端收到 Socket.IO ACK 才视为服务端已接受。`msg_id` 唯一，可避免重试造成重复日志。
+PostgreSQL 保存业务数据。学生多分组通过 `StudentGroupMember` 关系表保存，并保留旧 `StudentProfile.groupId` 作为兼容字段。每条合法信令写入 `SignalLog`；白板信令另写 `WhiteboardEvent`；奖励和任务公开表扬另写 `RewardLog`。课堂结束后基于 `SignalLog`、`RewardLog`、任务完成时间和学生加入时间生成 `ClassSessionReport`，其中模板 AI 总结标记为 `template_mvp`，后续可替换成真实 AI 生成。客户端收到 Socket.IO ACK 才视为服务端已接受。`msg_id` 唯一，可避免重试造成重复日志。
+
+专注分是产品内的学习过程参考分，不是医学或心理评估。MVP 评分因素包括：是否准时进入课堂、页面切出次数、课堂任务完成、举手/表情/番茄钟提前完成反馈、长时间无操作次数。
 
 MVP 的在线状态是瞬时状态，由房间内 Socket 广播，不作为永久学习结论。未来可接入 Redis 保存 presence、做多实例 Socket.IO adapter 和限流。
 
