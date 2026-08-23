@@ -4,7 +4,7 @@ import type { Socket } from "socket.io-client";
 import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, Courseware, CoursewarePayload, DrawPayload, LearningTask, RewardPayload,
+  Classroom, ClassroomPraisePayload, Courseware, CoursewarePayload, DrawPayload, LearningTask, RewardPayload,
   RTCAction, RTCSignalPayload, SignalMessage, StudentInteractionPayload,
   User, WhiteboardAction
 } from "@companion/types";
@@ -31,6 +31,9 @@ interface TeacherReward {
   student: { name: string };
   room: { title: string };
 }
+
+const rewardIcon = (type: string) => type === "red_flower" ? "🌸" : type === "trophy" ? "🏆" : type === "confetti" ? "🎉" : type === "task_praise" ? "👏" : "⭐";
+const rewardLabel = (type: string) => type === "red_flower" ? "小红花" : type === "trophy" ? "奖杯" : type === "confetti" ? "彩带" : type === "task_praise" ? "任务表扬" : "星星雨";
 
 function Login() {
   const [email, setEmail] = useState("teacher@example.com");
@@ -280,7 +283,7 @@ function Dashboard() {
         <div className="page-heading"><div><small>REWARD RECORDS</small><h1>奖励记录</h1><p>查看课堂中发给学生的每一次正向鼓励。</p></div><span className="week-reward-count">本周 {weeklyRewards.length} 次</span></div>
         <Card className="reward-record-card">
           <div className="reward-record-row reward-record-head"><span>奖励</span><span>学生</span><span>课堂</span><span>鼓励语</span><span>发送时间</span></div>
-          {rewards.map((reward) => <div className="reward-record-row" key={reward.id}><div><span className="reward-record-icon">{reward.rewardType === "red_flower" ? "🌸" : reward.rewardType === "trophy" ? "🏆" : reward.rewardType === "confetti" ? "🎉" : "⭐"}</span><b>{reward.rewardType === "red_flower" ? "小红花" : reward.rewardType === "trophy" ? "奖杯" : reward.rewardType === "confetti" ? "彩带" : "星星雨"}</b></div><span>{reward.student.name}</span><span>{reward.room.title}</span><span>{reward.message || "继续加油！"}</span><span>{new Date(reward.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>)}
+          {rewards.map((reward) => <div className="reward-record-row" key={reward.id}><div><span className="reward-record-icon">{rewardIcon(reward.rewardType)}</span><b>{rewardLabel(reward.rewardType)}</b></div><span>{reward.student.name}</span><span>{reward.room.title}</span><span>{reward.message || "继续加油！"}</span><span>{new Date(reward.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span></div>)}
           {!rewards.length && <div className="subpage-empty">还没有奖励记录，进入课堂给学生送出第一份鼓励吧。</div>}
         </Card>
       </section>}
@@ -324,6 +327,26 @@ function TeacherRTCControls() {
   );
 }
 
+function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
+  useEffect(() => {
+    const timer = setTimeout(onDone, praise.duration || 4200);
+    return () => clearTimeout(timer);
+  }, [praise, onDone]);
+  return (
+    <div className={`class-praise-overlay ${praise.animation}`}>
+      <div className="praise-rays" />
+      <div className="praise-particles">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties}>★</i>)}</div>
+      <div className="class-praise-card">
+        <span>👏</span>
+        <small>全班表扬</small>
+        <h2>{praise.student_name} 完成任务啦！</h2>
+        {praise.task_title && <b>《{praise.task_title}》</b>}
+        <p>{praise.message}</p>
+      </div>
+    </div>
+  );
+}
+
 function ClassroomPage({ roomId }: { roomId: string }) {
   const user = session.user!;
   const socketRef = useRef<Socket | null>(null);
@@ -337,6 +360,8 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [raisedHands, setRaisedHands] = useState<Record<string, boolean>>({});
   const [studentEmoji, setStudentEmoji] = useState<{ uid: string; emoji: string; id: number } | null>(null);
   const [selectedStudentId, setSelectedStudentId] = useState("");
+  const [tasks, setTasks] = useState<LearningTask[]>([]);
+  const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
   useEffect(() => {
     if (!studentEmoji) return;
     const timer = setTimeout(() => setStudentEmoji(null), 2200);
@@ -345,6 +370,10 @@ function ClassroomPage({ roomId }: { roomId: string }) {
 
   const classroomStudents = useMemo(() => room?.students.map(({ student }) => student) ?? [], [room]);
   const selectedTarget = classroomStudents.find(({ id }) => id === selectedStudentId) ?? classroomStudents[0];
+  const tasksForSelectedTarget = useMemo(
+    () => tasks.filter((task) => task.studentId === selectedTarget?.id),
+    [tasks, selectedTarget?.id]
+  );
   useEffect(() => {
     const firstStudent = classroomStudents[0];
     if (!firstStudent) return;
@@ -367,19 +396,27 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     createSignal({ msg_type: msgType, action, room_id: roomId, from_uid: user.id, target_uid: targetUid, payload });
   const emit = async (message: SignalMessage<unknown>) => {
     const socket = socketRef.current;
-    if (!socket) return;
+    if (!socket) return false;
     const ack = await sendSignal(socket, message);
     if (!ack.ok) setNotice(ack.error ?? "操作未送达");
+    return ack.ok;
   };
 
   useEffect(() => {
     void Promise.all([
       api<Classroom>(`/api/rooms/${roomId}`),
-      api<Courseware[]>("/api/courseware")
-    ]).then(([roomData, coursewareData]) => {
+      api<Courseware[]>("/api/courseware"),
+      api<LearningTask[]>("/api/tasks")
+    ]).then(([roomData, coursewareData, taskData]) => {
       setRoom(roomData);
       setCourseware(coursewareData);
+      setTasks(taskData);
       setPage(roomData.currentPage ?? 1);
+      setSelectedCourseware(
+        roomData.courseware
+          ?? coursewareData.find(({ id }) => id === roomData.coursewareId)
+          ?? null
+      );
       if (roomData.status === "scheduled") void api(`/api/rooms/${roomId}/start`, { method: "POST" });
     }).catch((error: Error) => setNotice(error.message));
 
@@ -413,6 +450,9 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           setStudentEmoji({ uid: message.from_uid, emoji: payload.emoji, id: Date.now() });
           setNotice(`学生发送了 ${payload.emoji}`);
         }
+      }
+      if (message.msg_type === "CLASSROOM_PRAISE") {
+        setClassroomPraise(message.payload as unknown as ClassroomPraisePayload);
       }
     });
     return () => { socket.disconnect(); };
@@ -468,6 +508,34 @@ function ClassroomPage({ roomId }: { roomId: string }) {
       message: "小眼睛看回来啦，我们继续专心学习哦！", duration: 4000
     }, selectedTarget.id));
     setNotice(`已提醒 ${selectedTarget.name} 专注`);
+  };
+  const praiseCompletedTask = async (task: LearningTask) => {
+    const student = classroomStudents.find(({ id }) => id === task.studentId);
+    if (!student) return;
+    try {
+      let updated = task;
+      if (task.status !== "completed") {
+        updated = await api<LearningTask>(`/api/tasks/${task.id}/status`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "completed" })
+        });
+        setTasks((current) => current.map((item) => item.id === updated.id ? updated : item));
+      }
+      const payload: ClassroomPraisePayload = {
+        student_id: student.id,
+        student_name: student.name,
+        task_id: updated.id,
+        task_title: updated.title,
+        message: `${student.name}认真完成了学习任务，大家一起给TA鼓掌！`,
+        animation: "confetti",
+        duration: 4200
+      };
+      if (await emit(makeSignal("CLASSROOM_PRAISE", "TASK_COMPLETED_PRAISE", payload))) {
+        setNotice(`已全班表扬 ${student.name}`);
+      }
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "任务表扬失败");
+    }
   };
   const endClass = async () => {
     if (!confirm("确定结束本次课堂吗？学生端会立即收到结束提示。")) return;
@@ -537,9 +605,23 @@ function ClassroomPage({ roomId }: { roomId: string }) {
               </div>
             </div>
             <div className="aside-block focus-block"><div><span>🎯</span><b>专注提醒</b><small>发送给 {selectedTarget?.name ?? "选中学生"}</small></div><Button onClick={focus} disabled={!selectedTarget}>发送提醒</Button></div>
+            <div className="aside-block task-praise-block">
+              <div className="aside-heading"><b>任务表扬</b><small>全课堂可见</small></div>
+              <p>老师确认完成后，所有学生都会看到表扬特效。</p>
+              <div className="task-praise-list">
+                {tasksForSelectedTarget.map((task) => (
+                  <button key={task.id} className={task.status === "completed" ? "completed" : ""} onClick={() => void praiseCompletedTask(task)}>
+                    <span>{task.status === "completed" ? "✓" : "·"}</span>
+                    <div><b>{task.title}</b><small>{task.status === "completed" ? "已完成，可再次表扬" : "点击确认完成并表扬"}</small></div>
+                  </button>
+                ))}
+                {!tasksForSelectedTarget.length && <div className="task-praise-empty">该学生暂无学习任务</div>}
+              </div>
+            </div>
             <div className="rtc-note"><b>音视频通话</b><p>已支持老师同时查看多个学生摄像头；每个学生会建立独立 WebRTC 连接。</p></div>
           </aside>
         </main>
+        {classroomPraise && <ClassroomPraiseOverlay praise={classroomPraise} onDone={() => setClassroomPraise(null)} />}
         {notice && <div className="toast" onAnimationEnd={() => setNotice("")}>{notice}</div>}
       </div>
     </RTCProvider>

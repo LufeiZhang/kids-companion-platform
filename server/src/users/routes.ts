@@ -6,6 +6,13 @@ import type { UserRole } from "@companion/types";
 export const usersRouter = Router();
 usersRouter.use(requireAuth());
 
+const studentAccessForTeacher = (teacherId: string) => ({
+  OR: [
+    { group: { teacherId } },
+    { groupMemberships: { some: { group: { teacherId } } } }
+  ]
+});
+
 usersRouter.get("/me", async (request: AuthRequest, response) => {
   const user = await prisma.user.findUnique({ where: { id: request.auth!.id } });
   if (!user) return response.status(404).json({ message: "用户不存在" });
@@ -18,14 +25,24 @@ usersRouter.get("/", async (request: AuthRequest, response) => {
   const where = request.auth!.role === "teacher"
     ? {
         role: "student" as const,
-        studentProfile: { group: { teacherId: request.auth!.id } }
+        studentProfile: studentAccessForTeacher(request.auth!.id)
       }
     : role ? { role } : undefined;
   const users = await prisma.user.findMany({
     where,
     select: {
       id: true, name: true, email: true, phone: true, role: true, avatar: true, createdAt: true,
-      studentProfile: { include: { group: true } },
+      studentProfile: {
+        include: {
+          group: true,
+          groupMemberships: {
+            include: {
+              group: { include: { teacher: { select: { id: true, name: true } } } }
+            },
+            orderBy: { createdAt: "asc" }
+          }
+        }
+      },
       teacherProfile: true
     },
     orderBy: { createdAt: "desc" }
@@ -58,13 +75,36 @@ usersRouter.post("/", requireAuth(["admin"]), async (request: AuthRequest, respo
 });
 
 usersRouter.patch("/:id/group", requireAuth(["admin"]), async (request: AuthRequest, response) => {
-  const groupId = request.body.groupId as string | null;
-  const profile = await prisma.studentProfile.update({
-    where: { userId: String(request.params.id) },
-    data: { groupId }
+  const body = request.body as { groupId?: string | null; groupIds?: string[] };
+  const groupIds = [...new Set(
+    Array.isArray(body.groupIds)
+      ? body.groupIds.filter((groupId): groupId is string => typeof groupId === "string" && Boolean(groupId))
+      : typeof body.groupId === "string" && body.groupId
+        ? [body.groupId]
+        : []
+  )];
+  if (groupIds.length) {
+    const count = await prisma.studentGroup.count({ where: { id: { in: groupIds } } });
+    if (count !== groupIds.length) return response.status(400).json({ message: "分组不存在" });
+  }
+  const profile = await prisma.studentProfile.findUnique({ where: { userId: String(request.params.id) } });
+  if (!profile) return response.status(404).json({ message: "学生资料不存在" });
+  const updated = await prisma.$transaction(async (tx) => {
+    const studentProfile = await tx.studentProfile.update({
+      where: { id: profile.id },
+      data: { groupId: groupIds[0] ?? null }
+    });
+    await tx.studentGroupMember.deleteMany({ where: { studentProfileId: profile.id } });
+    if (groupIds.length) {
+      await tx.studentGroupMember.createMany({
+        data: groupIds.map((groupId) => ({ groupId, studentProfileId: profile.id })),
+        skipDuplicates: true
+      });
+    }
+    return studentProfile;
   });
   await prisma.adminAuditLog.create({
-    data: { actorId: request.auth!.id, action: "ASSIGN_GROUP", targetType: "StudentProfile", targetId: profile.id, payload: { groupId } }
+    data: { actorId: request.auth!.id, action: "ASSIGN_GROUPS", targetType: "StudentProfile", targetId: profile.id, payload: { groupIds } }
   });
-  response.json(profile);
+  response.json(updated);
 });

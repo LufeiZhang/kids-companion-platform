@@ -10,10 +10,23 @@ groupsRouter.get("/", async (request: AuthRequest, response) => {
     where: request.auth!.role === "teacher" ? { teacherId: request.auth!.id } : undefined,
     include: {
       teacher: { select: { id: true, name: true } },
-      students: { include: { user: { select: { id: true, name: true, email: true } } } }
+      students: { include: { user: { select: { id: true, name: true, email: true } } } },
+      members: {
+        include: {
+          studentProfile: {
+            include: { user: { select: { id: true, name: true, email: true } } }
+          }
+        },
+        orderBy: { createdAt: "asc" }
+      }
     }
   });
-  response.json(groups);
+  response.json(groups.map(({ members, students, ...group }) => {
+    const byUserId = new Map<string, { user: { id: string; name: string; email: string } }>();
+    for (const student of students) byUserId.set(student.user.id, { user: student.user });
+    for (const member of members) byUserId.set(member.studentProfile.user.id, { user: member.studentProfile.user });
+    return { ...group, students: [...byUserId.values()] };
+  }));
 });
 
 groupsRouter.post("/", requireAuth(["admin"]), async (request: AuthRequest, response) => {

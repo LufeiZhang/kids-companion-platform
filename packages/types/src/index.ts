@@ -22,6 +22,7 @@ export interface Classroom {
   status: RoomStatus;
   currentPage: number;
   coursewareId?: string | null;
+  courseware?: Courseware | null;
   startedAt?: string | null;
   endedAt?: string | null;
   students: Array<{ student: User }>;
@@ -78,6 +79,9 @@ export const MESSAGE_ACTIONS = {
   ],
   STUDENT_INTERACTION: [
     "RAISE_HAND", "LOWER_HAND", "SEND_EMOJI"
+  ],
+  CLASSROOM_PRAISE: [
+    "TASK_COMPLETED_PRAISE"
   ]
 } as const;
 
@@ -89,9 +93,10 @@ export type TeacherAction = typeof MESSAGE_ACTIONS.TEACHER_CONTROL[number];
 export type StudentStatusAction = typeof MESSAGE_ACTIONS.STUDENT_STATUS[number];
 export type RTCAction = typeof MESSAGE_ACTIONS.RTC_SIGNAL[number];
 export type StudentInteractionAction = typeof MESSAGE_ACTIONS.STUDENT_INTERACTION[number];
+export type ClassroomPraiseAction = typeof MESSAGE_ACTIONS.CLASSROOM_PRAISE[number];
 export type SignalAction =
   | RoomAction | WhiteboardAction | CoursewareAction | TeacherAction
-  | StudentStatusAction | RTCAction | StudentInteractionAction;
+  | StudentStatusAction | RTCAction | StudentInteractionAction | ClassroomPraiseAction;
 
 export interface DrawPayload {
   x: number;
@@ -113,6 +118,16 @@ export interface RewardPayload {
   reward_type: "red_flower" | "trophy" | "confetti" | "star_rain";
   animation: string;
   message: string;
+  duration: number;
+}
+
+export interface ClassroomPraisePayload {
+  student_id: string;
+  student_name: string;
+  task_id?: string;
+  task_title?: string;
+  message: string;
+  animation: "spotlight" | "confetti" | "star_burst";
   duration: number;
 }
 

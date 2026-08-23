@@ -110,6 +110,28 @@ WebRTC 点对点协商使用定向消息，`target_uid` 必填。Offer 与 Answe
 学生举手 payload 为 `{ "raised": true }`，表情 payload 为 `{ "emoji": "😊" }`。
 消息必须由课堂学生定向发送给本课堂教师；教师端收到后更新学生状态卡或播放表情动画。
 
+### CLASSROOM_PRAISE
+
+`TASK_COMPLETED_PRAISE`
+
+教师在课堂内确认学生完成学习任务后，向整个课堂广播公开表扬。该消息不填写
+`target_uid`，服务端会校验发送者是本课堂教师、被表扬学生在本课堂内；如果带有
+`task_id`，还会校验任务属于该教师和学生。
+
+```json
+{
+  "student_id": "student_001",
+  "student_name": "小星星",
+  "task_id": "task_001",
+  "task_title": "晨读 15 分钟",
+  "message": "小星星认真完成了学习任务，大家一起给TA鼓掌！",
+  "animation": "confetti",
+  "duration": 4200
+}
+```
+
+服务端会写入 `SignalLog`，并以 `task_praise` 类型写入 `RewardLog`，便于教师端和管理后台统一查看正向激励记录。
+
 ## 奖励事务顺序
 
 1. 教师发送带目标学生的 `GRANT_REWARD`。

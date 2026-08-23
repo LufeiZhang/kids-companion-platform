@@ -36,6 +36,14 @@ async function main() {
     where: { userId: student.id },
     data: { groupId: group.id }
   });
+  const profile = await prisma.studentProfile.findUnique({ where: { userId: student.id } });
+  if (profile) {
+    await prisma.studentGroupMember.upsert({
+      where: { groupId_studentProfileId: { groupId: group.id, studentProfileId: profile.id } },
+      update: {},
+      create: { groupId: group.id, studentProfileId: profile.id }
+    });
+  }
   const taskCount = await prisma.learningTask.count({
     where: { teacherId: teacher.id, studentId: student.id }
   });

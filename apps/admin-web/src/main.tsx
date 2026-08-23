@@ -10,7 +10,13 @@ const APP_BASE = import.meta.env.BASE_URL;
 type Tab = "dashboard" | "students" | "teachers" | "groups" | "classes" | "rewards" | "logs";
 interface AdminUser extends User {
   phone?: string;
-  studentProfile?: { id: string; grade?: string; groupId?: string; group?: Group };
+  studentProfile?: {
+    id: string;
+    grade?: string;
+    groupId?: string;
+    group?: Group;
+    groupMemberships?: Array<{ group: Group }>;
+  };
   teacherProfile?: { bio?: string; subjects: string[] };
 }
 interface Group {
@@ -101,11 +107,25 @@ function Dashboard({ users, rooms, rewards, signals }: { users: AdminUser[]; roo
 }
 
 function UserTable({ title, subtitle, users, groups, action, onAssigned }: { title:string;subtitle:string;users:AdminUser[];groups:Group[];action():void;onAssigned():void }) {
-  const assign = async (userId: string, groupId: string) => {
-    await api(`/api/users/${userId}/group`, { method: "PATCH", body: JSON.stringify({ groupId: groupId || null }) });
+  const groupIdsFor = (user: AdminUser) => {
+    const ids = new Set<string>();
+    if (user.studentProfile?.groupId) ids.add(user.studentProfile.groupId);
+    for (const membership of user.studentProfile?.groupMemberships ?? []) ids.add(membership.group.id);
+    return [...ids];
+  };
+  const assign = async (userId: string, groupIds: string[]) => {
+    await api(`/api/users/${userId}/group`, { method: "PATCH", body: JSON.stringify({ groupIds }) });
     onAssigned();
   };
-  return <div className="admin-body"><Card className="table-card"><div className="panel-title"><div><h3>{title}</h3><p>{subtitle}</p></div><Button onClick={action}>＋ 创建账号</Button></div><table><thead><tr><th>用户</th><th>角色</th><th>分组 / 负责范围</th><th>基础学习状态</th><th>创建时间</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><div className="person"><span>{user.name.slice(0,1)}</span><div><b>{user.name}</b><small>{user.email}</small></div></div></td><td><span className={`role ${user.role}`}>{user.role === "student" ? "学生" : "教师"}</span></td><td>{user.role === "student" ? <select value={user.studentProfile?.groupId ?? ""} onChange={(event) => void assign(user.id,event.target.value)}><option value="">未分组</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.name} · {group.teacher?.name}</option>)}</select> : groups.filter((group) => group.teacherId === user.id).map((group) => group.name).join("、") || "尚未分配"}</td><td><span className="healthy">● 正常</span></td><td>{user.createdAt ? new Date(user.createdAt).toLocaleDateString("zh-CN") : "—"}</td></tr>)}</tbody></table>{!users.length && <div className="no-data">暂无数据</div>}</Card></div>;
+  const toggleGroup = (user: AdminUser, groupId: string, checked: boolean) => {
+    const current = groupIdsFor(user);
+    const next = checked ? [...new Set([...current, groupId])] : current.filter((id) => id !== groupId);
+    void assign(user.id, next);
+  };
+  return <div className="admin-body"><Card className="table-card"><div className="panel-title"><div><h3>{title}</h3><p>{subtitle}</p></div><Button onClick={action}>＋ 创建账号</Button></div><table><thead><tr><th>用户</th><th>角色</th><th>分组 / 负责范围</th><th>基础学习状态</th><th>创建时间</th></tr></thead><tbody>{users.map((user) => {
+    const assignedGroupIds = groupIdsFor(user);
+    return <tr key={user.id}><td><div className="person"><span>{user.name.slice(0,1)}</span><div><b>{user.name}</b><small>{user.email}</small></div></div></td><td><span className={`role ${user.role}`}>{user.role === "student" ? "学生" : "教师"}</span></td><td>{user.role === "student" ? <div className="multi-group-editor">{groups.map((group) => <label key={group.id}><input type="checkbox" checked={assignedGroupIds.includes(group.id)} onChange={(event) => toggleGroup(user, group.id, event.target.checked)} /><span>{group.name}</span><small>{group.teacher?.name}</small></label>)}{!groups.length && <small>请先创建分组</small>}</div> : groups.filter((group) => group.teacherId === user.id).map((group) => group.name).join("、") || "尚未分配"}</td><td><span className="healthy">● 正常</span></td><td>{user.createdAt ? new Date(user.createdAt).toLocaleDateString("zh-CN") : "—"}</td></tr>;
+  })}</tbody></table>{!users.length && <div className="no-data">暂无数据</div>}</Card></div>;
 }
 
 function Groups({ groups, action }: { groups: Group[]; action(): void }) {
@@ -119,8 +139,9 @@ function Classes({ rooms, embedded=false }: { rooms: Classroom[]; embedded?:bool
 }
 
 function Rewards({ rows }: { rows: RewardRow[] }) {
-  const icon: Record<string,string> = {red_flower:"🌸",trophy:"🏆",confetti:"🎉",star_rain:"⭐"};
-  return <div className="admin-body"><Card className="table-card"><div className="panel-title"><div><h3>奖励发送记录</h3><p>所有课堂正向激励均在服务端留痕</p></div></div><table><thead><tr><th>奖励</th><th>课堂</th><th>教师 → 学生</th><th>鼓励语</th><th>时间</th></tr></thead><tbody>{rows.map((row)=><tr key={row.id}><td><span className="reward-icon">{icon[row.rewardType] ?? "🎁"}</span>{row.rewardType}</td><td>{row.room.title}</td><td>{row.teacher.name} → {row.student.name}</td><td>{row.message}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card></div>;
+  const icon: Record<string,string> = {red_flower:"🌸",trophy:"🏆",confetti:"🎉",star_rain:"⭐",task_praise:"👏"};
+  const label: Record<string,string> = {red_flower:"小红花",trophy:"奖杯",confetti:"彩带",star_rain:"星星雨",task_praise:"任务表扬"};
+  return <div className="admin-body"><Card className="table-card"><div className="panel-title"><div><h3>奖励发送记录</h3><p>所有课堂正向激励均在服务端留痕</p></div></div><table><thead><tr><th>奖励</th><th>课堂</th><th>教师 → 学生</th><th>鼓励语</th><th>时间</th></tr></thead><tbody>{rows.map((row)=><tr key={row.id}><td><span className="reward-icon">{icon[row.rewardType] ?? "🎁"}</span>{label[row.rewardType] ?? row.rewardType}</td><td>{row.room.title}</td><td>{row.teacher.name} → {row.student.name}</td><td>{row.message}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card></div>;
 }
 
 function Logs({ signals, audits }: { signals: LogRow[]; audits: LogRow[] }) {

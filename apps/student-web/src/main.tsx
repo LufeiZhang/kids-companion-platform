@@ -1,10 +1,10 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
-import { api, connectSocket, login, sendSignal, session } from "@companion/shared";
+import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, CoursewarePayload, LearningTask, RTCAction, RTCSignalPayload, RewardPayload,
+  Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask, RTCAction, RTCSignalPayload, RewardPayload,
   SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
@@ -126,6 +126,26 @@ function RewardOverlay({ reward, onDone }: { reward: RewardPayload; onDone(): vo
   );
 }
 
+function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
+  useEffect(() => {
+    const timer = setTimeout(onDone, praise.duration || 4200);
+    return () => clearTimeout(timer);
+  }, [praise, onDone]);
+  return (
+    <div className={`class-praise-overlay ${praise.animation}`}>
+      <div className="praise-rays" />
+      <div className="praise-particles">{Array.from({ length: 34 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties}>⭐</i>)}</div>
+      <div className="class-praise-card">
+        <span>👏</span>
+        <small>全班为TA鼓掌</small>
+        <h2>{praise.student_name} 完成任务啦！</h2>
+        {praise.task_title && <b>《{praise.task_title}》</b>}
+        <p>{praise.message}</p>
+      </div>
+    </div>
+  );
+}
+
 function ClassroomControls({ sendStatus, sendInteraction }: {
   sendStatus(action: StudentStatusAction): void;
   sendInteraction(action: StudentInteractionAction, payload: StudentInteractionPayload): Promise<boolean>;
@@ -179,6 +199,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const [page, setPage] = useState(1);
   const [courseware, setCourseware] = useState<{ url?: string; type?: "image" | "pdf" }>({});
   const [reward, setReward] = useState<RewardPayload | null>(null);
+  const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
   const [focusMessage, setFocusMessage] = useState("");
   const [ended, setEnded] = useState(false);
   const [connection, setConnection] = useState("正在连接老师…");
@@ -225,6 +246,10 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     void api<Classroom>(`/api/rooms/${roomId}`).then((data) => {
       setRoom(data);
       setPage(data.currentPage ?? 1);
+      setCourseware(data.courseware ? {
+        url: `${API_URL}${data.courseware.fileUrl}`,
+        type: data.courseware.type
+      } : {});
       if (data.status === "ended") setEnded(true);
     }).catch(() => setEnded(true));
     const socket = connectSocket();
@@ -249,6 +274,9 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       if (signal.msg_type === "TEACHER_CONTROL" && signal.action === "FOCUS_REMINDER") {
         const payload = signal.payload as { message?: string };
         setFocusMessage(payload.message ?? "小眼睛看回来啦，我们继续学习哦！");
+      }
+      if (signal.msg_type === "CLASSROOM_PRAISE") {
+        setClassroomPraise(signal.payload as unknown as ClassroomPraisePayload);
       }
       if (signal.msg_type === "ROOM_EVENT" && signal.action === "ROOM_ENDED") setEnded(true);
     });
@@ -281,6 +309,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
           <StudentVideoError />
         </main>
         {reward && <RewardOverlay reward={reward} onDone={() => setReward(null)} />}
+        {classroomPraise && <ClassroomPraiseOverlay praise={classroomPraise} onDone={() => setClassroomPraise(null)} />}
         {focusMessage && <div className="focus-overlay"><div className="focus-card"><span>🎯</span><h2>小眼睛，看这里</h2><p>{focusMessage}</p><Button onClick={() => { setFocusMessage(""); sendStatus("ACTIVE"); }}>我回来啦！</Button></div></div>}
         {ended && <div className="focus-overlay"><div className="focus-card end-card"><span>🌙</span><h2>今天的课堂结束啦</h2><p>你今天也很认真哦，休息一下吧！</p><Button onClick={() => { location.href = appUrl(); }}>回到我的首页</Button></div></div>}
       </div>

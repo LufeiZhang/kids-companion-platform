@@ -10,6 +10,13 @@ const taskInclude = {
   student: { select: { id: true, name: true, email: true } }
 } as const;
 
+const studentAccessForTeacher = (teacherId: string) => ({
+  OR: [
+    { group: { teacherId } },
+    { groupMemberships: { some: { group: { teacherId } } } }
+  ]
+});
+
 tasksRouter.get("/", async (request: AuthRequest, response) => {
   const auth = request.auth!;
   const where = auth.role === "teacher"
@@ -39,7 +46,7 @@ tasksRouter.post("/", requireAuth(["teacher"]), async (request: AuthRequest, res
     where: {
       id: studentId,
       role: "student",
-      studentProfile: { group: { teacherId: request.auth!.id } }
+      studentProfile: studentAccessForTeacher(request.auth!.id)
     },
     select: { id: true }
   });

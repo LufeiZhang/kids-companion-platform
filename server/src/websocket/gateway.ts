@@ -1,7 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import { Server, type Socket } from "socket.io";
 import { Prisma } from "@prisma/client";
-import { MESSAGE_ACTIONS, type SignalAck, type SignalMessage } from "@companion/types";
+import { MESSAGE_ACTIONS, type ClassroomPraisePayload, type SignalAck, type SignalMessage } from "@companion/types";
 import { prisma } from "../database/client.js";
 import { verifyToken, type AuthUser } from "../auth/security.js";
 
@@ -88,7 +88,7 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
           return ack({ ok: false, msg_id: message.msg_id, error: "无权访问该课堂" });
         }
 
-        const teacherOnly = ["WHITEBOARD_EVENT", "COURSEWARE_CONTROL", "TEACHER_CONTROL"].includes(message.msg_type)
+        const teacherOnly = ["WHITEBOARD_EVENT", "COURSEWARE_CONTROL", "TEACHER_CONTROL", "CLASSROOM_PRAISE"].includes(message.msg_type)
           || (message.msg_type === "ROOM_EVENT" && ["ROOM_STARTED", "ROOM_ENDED"].includes(message.action));
         if (teacherOnly && !access.isTeacher) {
           return ack({ ok: false, msg_id: message.msg_id, error: "此操作仅限本课堂教师" });
@@ -115,6 +115,9 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         if (message.msg_type === "STUDENT_INTERACTION" && message.target_uid !== access.room.teacherId) {
           return ack({ ok: false, msg_id: message.msg_id, error: "学生互动只能发送给本课堂教师" });
         }
+        if (message.msg_type === "CLASSROOM_PRAISE" && message.target_uid) {
+          return ack({ ok: false, msg_id: message.msg_id, error: "公开表扬会广播给全课堂，不需要指定目标用户" });
+        }
 
         if (message.msg_type === "ROOM_EVENT" && message.action === "JOIN_ROOM") {
           await socket.join(message.room_id);
@@ -124,6 +127,26 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
               where: { roomId_studentId: { roomId: message.room_id, studentId: socket.data.user.id } },
               data: { joinedAt: new Date() }
             });
+          }
+          if (access.room.coursewareId) {
+            const courseware = await prisma.courseware.findUnique({ where: { id: access.room.coursewareId } });
+            if (courseware) {
+              socket.emit("signal", {
+                msg_id: crypto.randomUUID(),
+                msg_type: "COURSEWARE_CONTROL",
+                action: "OPEN_COURSEWARE",
+                room_id: message.room_id,
+                from_uid: access.room.teacherId,
+                target_uid: socket.data.user.id,
+                timestamp: Date.now(),
+                payload: {
+                  courseware_id: courseware.id,
+                  file_url: courseware.fileUrl,
+                  file_type: courseware.type,
+                  page: access.room.currentPage
+                }
+              } satisfies SignalMessage);
+            }
           }
         }
 
@@ -163,6 +186,33 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
           });
         }
 
+        if (message.msg_type === "CLASSROOM_PRAISE" && message.action === "TASK_COMPLETED_PRAISE") {
+          const payload = message.payload as unknown as ClassroomPraisePayload;
+          if (!payload.student_id) throw new Error("公开表扬必须指定学生");
+          const praisedStudentInRoom = access.room.students.some(({ studentId }) => studentId === payload.student_id);
+          if (!praisedStudentInRoom) throw new Error("只能表扬本课堂内的学生");
+          if (payload.task_id) {
+            const task = await prisma.learningTask.findFirst({
+              where: {
+                id: payload.task_id,
+                teacherId: socket.data.user.id,
+                studentId: payload.student_id
+              },
+              select: { id: true }
+            });
+            if (!task) throw new Error("任务不存在或不属于该学生");
+          }
+          await prisma.rewardLog.create({
+            data: {
+              roomId: message.room_id,
+              teacherId: socket.data.user.id,
+              studentId: payload.student_id,
+              rewardType: "task_praise",
+              message: payload.message
+            }
+          });
+        }
+
         if (message.msg_type === "ROOM_EVENT" && message.action === "ROOM_STARTED") {
           await prisma.classRoom.update({
             where: { id: message.room_id },
@@ -177,7 +227,9 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
         }
 
         await saveSignal(message, "ACKED");
-        if (message.target_uid) {
+        if (message.msg_type === "CLASSROOM_PRAISE") {
+          io.to(message.room_id).emit("signal", message);
+        } else if (message.target_uid) {
           for (const client of await io.in(message.room_id).fetchSockets()) {
             if (client.data.user?.id === message.target_uid) client.emit("signal", message);
           }

@@ -9,9 +9,9 @@
 
 ## 用户与分组
 
-- `GET /api/users?role=student|teacher`：管理员查看全部；教师仅看自己分组学生
+- `GET /api/users?role=student|teacher`：管理员查看全部；教师仅看自己任一授权分组内的学生
 - `POST /api/users`：管理员创建账号
-- `PATCH /api/users/:id/group`：管理员给学生分组
+- `PATCH /api/users/:id/group`：管理员给学生设置一个或多个分组，推荐 body 为 `{ "groupIds": ["group_1", "group_2"] }`；兼容旧 body `{ "groupId": "group_1" }`
 - `GET /api/groups`：管理员全部；教师自己的分组
 - `POST /api/groups`：管理员创建分组并指定教师
 
