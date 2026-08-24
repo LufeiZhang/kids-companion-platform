@@ -1,14 +1,17 @@
 import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
-import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
+import {
+  api, API_URL, connectSocket, getLanguagePreference, login, sendSignal, session,
+  setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, type Language
+} from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
   Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask, PomodoroPayload, RTCAction,
   RTCSignalPayload, RewardPayload, SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
-import { Button, Card, Input } from "@companion/ui";
+import { Button, Card, Input, LanguageSwitcher } from "@companion/ui";
 import { Whiteboard } from "@companion/whiteboard";
 import "./styles.css";
 
@@ -33,7 +36,24 @@ const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
   };
 };
 
+function useLanguageState() {
+  const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
+  useEffect(() => subscribeLanguagePreference(setLanguageState), []);
+  const setLanguage = useCallback((next: Language) => {
+    setLanguagePreference(next);
+    setLanguageState(next);
+  }, []);
+  return { language, setLanguage };
+}
+
+function DocumentLanguageSync() {
+  const { language } = useLanguageState();
+  useEffect(() => syncDocumentLanguage(language), [language]);
+  return null;
+}
+
 function Login() {
+  const { language, setLanguage } = useLanguageState();
   const [email, setEmail] = useState("student@example.com");
   const [password, setPassword] = useState("Demo123!");
   const [error, setError] = useState("");
@@ -51,6 +71,7 @@ function Login() {
       <div className="cloud cloud-one">☁</div><div className="cloud cloud-two">☁</div>
       <section className="login-welcome"><span className="mascot">🌟</span><small>STAR STUDY SPACE</small><h1>嗨，小小探索家！</h1><p>老师和今天的新知识，都在这里等你啦。</p><div className="planet">🪐</div></section>
       <form className="kid-login-card" onSubmit={submit}>
+        <LanguageSwitcher language={language} onChange={setLanguage} className="login-language" />
         <div className="mini-stars">✦　·　✧</div><h2>欢迎回到伴学空间</h2><p>准备好开始今天的学习了吗？</p>
         <label>你的账号<Input value={email} onChange={(event) => setEmail(event.target.value)} type="email" /></label>
         <label>秘密口令<Input value={password} onChange={(event) => setPassword(event.target.value)} type="password" /></label>
@@ -63,6 +84,7 @@ function Login() {
 
 function StudentHome() {
   const user = session.user!;
+  const { language, setLanguage } = useLanguageState();
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [tasks, setTasks] = useState<LearningTask[]>([]);
   const [error, setError] = useState("");
@@ -86,7 +108,7 @@ function StudentHome() {
   const nextRoom = rooms.find((room) => room.status !== "ended");
   return (
     <div className="student-home">
-      <header className="kid-header"><button className="kid-logo" onClick={() => setActiveView("home")}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></button><nav><button className={activeView === "home" ? "active" : ""} onClick={() => setActiveView("home")}>我的首页</button><button className={activeView === "tasks" ? "active" : ""} onClick={() => setActiveView("tasks")}>学习任务</button><button className={activeView === "treasure" ? "active" : ""} onClick={() => setActiveView("treasure")}>成长宝箱</button></nav><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></header>
+      <header className="kid-header"><button className="kid-logo" onClick={() => setActiveView("home")}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></button><nav><button className={activeView === "home" ? "active" : ""} onClick={() => setActiveView("home")}>我的首页</button><button className={activeView === "tasks" ? "active" : ""} onClick={() => setActiveView("tasks")}>学习任务</button><button className={activeView === "treasure" ? "active" : ""} onClick={() => setActiveView("treasure")}>成长宝箱</button></nav><div className="header-actions"><LanguageSwitcher language={language} onChange={setLanguage} /><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></div></header>
       {activeView === "home" && <main>
         <section className="hero-card"><div className="hero-copy"><span>🌞 新的一天</span><h1>{user.name}，今天也要<br/><em>元气满满</em>地学习哦！</h1><p>认真完成每一次小挑战，星星就会越来越多 ✨</p>{nextRoom ? <Button onClick={() => { location.href = appUrl(`classroom/${nextRoom.id}`); }}>{nextRoom.status === "active" ? "老师正在等你，进入课堂" : "进入今天的课堂"}　→</Button> : <Button disabled>等待老师创建课堂</Button>}</div><div className="hero-art"><div className="sun">☀️</div><div className="book-kid">📚</div><span className="hero-star s1">★</span><span className="hero-star s2">★</span></div></section>
         {error && <p className="error">{error}</p>}
@@ -226,6 +248,7 @@ function StudentVideoError() {
 
 function StudentClassroom({ roomId }: { roomId: string }) {
   const user = session.user!;
+  const { language, setLanguage } = useLanguageState();
   const socketRef = useRef<Socket | null>(null);
   const [room, setRoom] = useState<Classroom | null>(null);
   const [incoming, setIncoming] = useState<SignalMessage | null>(null);
@@ -375,7 +398,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       sendRTC={sendRTC}
     >
       <div className="student-classroom">
-        <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">认真听讲的你最闪亮 ✨</span></header>
+        <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">认真听讲的你最闪亮 ✨</span><LanguageSwitcher language={language} onChange={setLanguage} className="class-language" /></header>
         <main className="student-class-layout">
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
           <div className="teacher-pip"><VideoTile label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
@@ -394,12 +417,15 @@ function StudentClassroom({ roomId }: { roomId: string }) {
 }
 
 function App() {
+  const app = (() => {
   if (!session.user || session.user.role !== "student") return <Login />;
   const path = location.pathname.startsWith(APP_BASE)
     ? `/${location.pathname.slice(APP_BASE.length)}`
     : location.pathname;
   const match = path.match(/^\/classroom\/([^/]+)/);
   return match?.[1] ? <StudentClassroom roomId={match[1]} /> : <StudentHome />;
+  })();
+  return <><DocumentLanguageSync />{app}</>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

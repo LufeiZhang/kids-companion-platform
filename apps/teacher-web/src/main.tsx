@@ -1,7 +1,10 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
-import { api, API_URL, connectSocket, login, sendSignal, session } from "@companion/shared";
+import {
+  api, API_URL, connectSocket, getLanguagePreference, login, sendSignal, session,
+  setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, translateText, type Language
+} from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
   ClassSessionReport, Classroom, ClassroomPraisePayload, Courseware, CoursewarePayload, DrawPayload,
@@ -9,7 +12,7 @@ import type {
   User, WhiteboardAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
-import { Button, Card, EmptyState, Input } from "@companion/ui";
+import { Button, Card, EmptyState, Input, LanguageSwitcher } from "@companion/ui";
 import { Whiteboard } from "@companion/whiteboard";
 import "./styles.css";
 
@@ -53,7 +56,24 @@ const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
   };
 };
 
+function useLanguageState() {
+  const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
+  useEffect(() => subscribeLanguagePreference(setLanguageState), []);
+  const setLanguage = useCallback((next: Language) => {
+    setLanguagePreference(next);
+    setLanguageState(next);
+  }, []);
+  return { language, setLanguage };
+}
+
+function DocumentLanguageSync() {
+  const { language } = useLanguageState();
+  useEffect(() => syncDocumentLanguage(language), [language]);
+  return null;
+}
+
 function Login() {
+  const { language, setLanguage } = useLanguageState();
   const [email, setEmail] = useState("teacher@example.com");
   const [password, setPassword] = useState("Demo123!");
   const [error, setError] = useState("");
@@ -80,6 +100,7 @@ function Login() {
         <div className="brand-points"><span>实时互动白板</span><span>正向学习激励</span><span>轻量专注提醒</span></div>
       </section>
       <form className="login-card" onSubmit={submit}>
+        <LanguageSwitcher language={language} onChange={setLanguage} className="login-language" />
         <div><small>TEACHER CONSOLE</small><h2>教师工作台</h2><p>欢迎回来，请登录继续今天的陪伴。</p></div>
         <label>邮箱<Input value={email} onChange={(event) => setEmail(event.target.value)} type="email" /></label>
         <label>密码<Input value={password} onChange={(event) => setPassword(event.target.value)} type="password" /></label>
@@ -93,6 +114,7 @@ function Login() {
 
 function Shell({ children, active, onNavigate }: { children: React.ReactNode; active: TeacherTab; onNavigate(tab: TeacherTab): void }) {
   const user = session.user!;
+  const { language, setLanguage } = useLanguageState();
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -106,7 +128,7 @@ function Shell({ children, active, onNavigate }: { children: React.ReactNode; ac
         <button className="logout" onClick={() => { session.clear(); location.href = appUrl(); }}>退出登录</button>
       </aside>
       <main className="content">
-        <header><div><small>上午好，</small><h2>{user.name} 👋</h2></div><div className="user-chip"><span>{user.name.slice(0, 1)}</span><div><b>{user.name}</b><small>伴学教师</small></div></div></header>
+        <header><div><small>上午好，</small><h2>{user.name} 👋</h2></div><div className="header-actions"><LanguageSwitcher language={language} onChange={setLanguage} /><div className="user-chip"><span>{user.name.slice(0, 1)}</span><div><b>{user.name}</b><small>伴学教师</small></div></div></div></header>
         {children}
       </main>
     </div>
@@ -440,6 +462,7 @@ function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePay
 
 function ClassroomPage({ roomId }: { roomId: string }) {
   const user = session.user!;
+  const { language, setLanguage } = useLanguageState();
   const socketRef = useRef<Socket | null>(null);
   const [room, setRoom] = useState<Classroom | null>(null);
   const [incoming, setIncoming] = useState<SignalMessage | null>(null);
@@ -714,7 +737,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     }
   };
   const endClass = async () => {
-    if (!confirm("确定结束本次课堂吗？学生端会立即收到结束提示。")) return;
+    if (!confirm(translateText("确定结束本次课堂吗？学生端会立即收到结束提示。", language))) return;
     await emit(makeSignal("ROOM_EVENT", "ROOM_ENDED", {}));
     await api(`/api/rooms/${roomId}/end`, { method: "POST" });
     location.href = appUrl();
@@ -738,6 +761,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
             </select>
           </div>
           <div className="page-controls"><button onClick={() => changePage(page - 1)}>‹</button><span>{page} / —</span><button onClick={() => changePage(page + 1)}>›</button></div>
+          <LanguageSwitcher language={language} onChange={setLanguage} className="class-language" />
           <Button className="danger" onClick={endClass}>结束课堂</Button>
         </header>
         <main className="classroom-layout">
@@ -822,12 +846,15 @@ function ClassroomPage({ roomId }: { roomId: string }) {
 }
 
 function App() {
+  const app = (() => {
   const path = location.pathname.startsWith(APP_BASE)
     ? `/${location.pathname.slice(APP_BASE.length)}`
     : location.pathname;
   if (!session.user || session.user.role !== "teacher") return <Login />;
   const match = path.match(/^\/classroom\/([^/]+)/);
   return match?.[1] ? <ClassroomPage roomId={match[1]} /> : <Dashboard />;
+  })();
+  return <><DocumentLanguageSync />{app}</>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

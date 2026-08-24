@@ -59,3 +59,4 @@ export function sendSignal(socket: Socket, message: SignalMessage<unknown>): Pro
 }
 
 export { API_URL };
+export * from "./i18n";

@@ -1,8 +1,11 @@
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { api, login, session } from "@companion/shared";
+import {
+  api, getLanguagePreference, login, session, setLanguagePreference,
+  subscribeLanguagePreference, syncDocumentLanguage, type Language
+} from "@companion/shared";
 import type { Classroom, User, UserRole } from "@companion/types";
-import { Button, Card, Input } from "@companion/ui";
+import { Button, Card, Input, LanguageSwitcher } from "@companion/ui";
 import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
@@ -37,7 +40,24 @@ interface LogRow {
   targetType?: string;
 }
 
+function useLanguageState() {
+  const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
+  useEffect(() => subscribeLanguagePreference(setLanguageState), []);
+  const setLanguage = useCallback((next: Language) => {
+    setLanguagePreference(next);
+    setLanguageState(next);
+  }, []);
+  return { language, setLanguage };
+}
+
+function DocumentLanguageSync() {
+  const { language } = useLanguageState();
+  useEffect(() => syncDocumentLanguage(language), [language]);
+  return null;
+}
+
 function Login() {
+  const { language, setLanguage } = useLanguageState();
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("Demo123!");
   const [error, setError] = useState("");
@@ -46,7 +66,7 @@ function Login() {
     try { await login(email, password, "admin"); location.href = APP_BASE; }
     catch (reason) { setError(reason instanceof Error ? reason.message : "登录失败"); }
   };
-  return <main className="admin-login"><form onSubmit={submit}><div className="admin-mark">伴</div><small>COMPANION ADMIN</small><h1>平台管理后台</h1><p>账号、课堂与数据治理中心</p><label>管理员邮箱<Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>密码<Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <div className="error">{error}</div>}<Button>登录管理后台</Button><em>演示密码 Demo123!</em></form></main>;
+  return <main className="admin-login"><form onSubmit={submit}><LanguageSwitcher language={language} onChange={setLanguage} className="login-language" /><div className="admin-mark">伴</div><small>COMPANION ADMIN</small><h1>平台管理后台</h1><p>账号、课堂与数据治理中心</p><label>管理员邮箱<Input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label><label>密码<Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>{error && <div className="error">{error}</div>}<Button>登录管理后台</Button><em>演示密码 Demo123!</em></form></main>;
 }
 
 const nav: Array<[Tab, string, string]> = [
@@ -55,6 +75,7 @@ const nav: Array<[Tab, string, string]> = [
 ];
 
 function AdminApp() {
+  const { language, setLanguage } = useLanguageState();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -86,7 +107,7 @@ function AdminApp() {
   return (
     <div className="admin-shell">
       <aside><div className="admin-logo"><span>伴</span><div><b>伴学平台</b><small>ADMIN CONSOLE</small></div></div><nav>{nav.map(([id, icon, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}><span>{icon}</span>{label}</button>)}</nav><div className="admin-security">🛡️ <b>隐私安全提示</b><p>遵循最小化收集原则；管理员的账号、分组等操作均会记录审计日志。</p></div><button className="signout" onClick={() => { session.clear(); location.href = APP_BASE; }}>退出登录</button></aside>
-      <main><header><div><h2>{nav.find(([id]) => id === tab)?.[2]}</h2><p>儿童远程伴学互动平台 · 管理与审计</p></div><div className="admin-user"><span>{session.user!.name.slice(0,1)}</span><div><b>{session.user!.name}</b><small>超级管理员</small></div></div></header>
+      <main><header><div><h2>{nav.find(([id]) => id === tab)?.[2]}</h2><p>儿童远程伴学互动平台 · 管理与审计</p></div><div className="header-actions"><LanguageSwitcher language={language} onChange={setLanguage} /><div className="admin-user"><span>{session.user!.name.slice(0,1)}</span><div><b>{session.user!.name}</b><small>超级管理员</small></div></div></div></header>
         {tab === "dashboard" && <Dashboard users={users} rooms={rooms} rewards={rewards} signals={signals} />}
         {tab === "students" && <UserTable title="学生账号" subtitle="查看基础学习状态、分组与账号信息" users={students} groups={groups} action={() => setShowUserForm(true)} onAssigned={load} />}
         {tab === "teachers" && <UserTable title="教师账号" subtitle="管理教师及其负责的学生分组" users={teachers} groups={groups} action={() => setShowUserForm(true)} onAssigned={load} />}
@@ -160,5 +181,5 @@ function CreateGroup({ teachers,onClose,onCreated }: { teachers:AdminUser[];onCl
   return <div className="modal-bg"><form className="admin-modal" onSubmit={submit}><button type="button" className="x" onClick={onClose}>×</button><small>CREATE GROUP</small><h2>新建学生分组</h2><label>分组名称<Input required value={form.name} onChange={(e)=>setForm({...form,name:e.target.value})}/></label><label>负责教师<select required value={form.teacherId} onChange={(e)=>setForm({...form,teacherId:e.target.value})}><option value="">请选择教师</option>{teachers.map((t)=><option value={t.id} key={t.id}>{t.name}</option>)}</select></label><label>分组说明<Input value={form.description} onChange={(e)=>setForm({...form,description:e.target.value})}/></label><Button>创建分组</Button></form></div>;
 }
 
-function App(){return !session.user||session.user.role!=="admin"?<Login/>:<AdminApp/>}
+function App(){const app=!session.user||session.user.role!=="admin"?<Login/>:<AdminApp/>;return <><DocumentLanguageSync />{app}</>;}
 createRoot(document.getElementById("root")!).render(<StrictMode><App/></StrictMode>);
