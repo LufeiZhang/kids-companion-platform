@@ -7,8 +7,9 @@ import {
 } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
-  Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask, PomodoroPayload, RTCAction,
-  RTCSignalPayload, RewardPayload, SignalMessage, StudentInteractionAction, StudentInteractionPayload, StudentStatusAction
+  AiPracticeMode, AiPracticeResponse, Classroom, ClassroomPraisePayload, CoursewarePayload, LearningTask,
+  PomodoroPayload, RTCAction, RTCSignalPayload, RewardPayload, SignalMessage, StudentInteractionAction,
+  StudentInteractionPayload, StudentStatusAction
 } from "@companion/types";
 import { createSignal } from "@companion/types";
 import { Button, Card, Input, LanguageSwitcher } from "@companion/ui";
@@ -17,7 +18,8 @@ import "./styles.css";
 
 const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
-type StudentView = "home" | "tasks" | "treasure";
+type StudentView = "home" | "tasks" | "treasure" | "ai";
+type AiChatMessage = { id: number; role: "student" | "assistant"; text: string; meta?: string };
 const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
 const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
   if (!pomodoro) return 0;
@@ -82,6 +84,111 @@ function Login() {
   );
 }
 
+const aiPracticeModes: Array<{ mode: AiPracticeMode; icon: string; label: string; hint: string }> = [
+  { mode: "vocabulary", icon: "🔤", label: "背单词", hint: "输入一个单词，比如 apple" },
+  { mode: "mental_math", icon: "🧮", label: "练口算", hint: "输入一道口算题，比如 18 + 7" },
+  { mode: "picture_retell", icon: "📖", label: "复述绘本", hint: "输入你刚读完的一句话或故事内容" },
+  { mode: "mistake_review", icon: "✏️", label: "错题问答", hint: "输入错题或不懂的步骤" },
+  { mode: "question", icon: "❓", label: "问问题", hint: "输入一个学习问题" }
+];
+
+function AiPracticeAssistant({ language }: { language: Language }) {
+  const [mode, setMode] = useState<AiPracticeMode>("vocabulary");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [chat, setChat] = useState<AiChatMessage[]>([]);
+  const selectedMode = aiPracticeModes.find((item) => item.mode === mode) ?? aiPracticeModes[0]!;
+
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault();
+    const text = message.trim();
+    if (!text || busy) return;
+    const userMessage: AiChatMessage = { id: Date.now(), role: "student", text, meta: selectedMode.label };
+    setChat((current) => [...current, userMessage]);
+    setMessage("");
+    setBusy(true);
+    try {
+      const reply = await api<AiPracticeResponse>("/api/ai/practice", {
+        method: "POST",
+        body: JSON.stringify({ mode, message: text, language })
+      });
+      const replyText = [reply.answer, reply.encouragement, reply.followUpQuestion]
+        .filter(Boolean)
+        .join("\n\n");
+      setChat((current) => [...current, {
+        id: Date.now() + 1,
+        role: "assistant",
+        text: replyText,
+        meta: reply.provider === "openai" ? "真实 AI 陪练" : reply.fallbackReason ?? "安全兜底回复"
+      }]);
+    } catch (reason) {
+      setChat((current) => [...current, {
+        id: Date.now() + 2,
+        role: "assistant",
+        text: reason instanceof Error ? reason.message : "AI 陪练暂时不可用，请稍后再试。",
+        meta: "发送失败"
+      }]);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="student-subpage ai-practice-page">
+      <section className="subpage-hero ai-hero">
+        <div>
+          <small>AI PRACTICE BUDDY</small>
+          <h1>AI 陪练助手</h1>
+          <p>可以陪你背单词、练口算、复述绘本、讲错题，也可以回答学习问题。</p>
+        </div>
+        <span>🤖</span>
+      </section>
+      <Card className="ai-safety-card">
+        <span>🛡️</span>
+        <p>AI 不会读取你的摄像头或麦克风；只会发送你输入的文字和必要学习记录。不要输入电话、地址、密码或家长联系方式。</p>
+      </Card>
+      <section className="ai-practice-layout">
+        <Card className="ai-mode-card">
+          <h3>选择练习方式</h3>
+          <div className="ai-mode-grid">
+            {aiPracticeModes.map((item) => (
+              <button key={item.mode} className={mode === item.mode ? "active" : ""} onClick={() => setMode(item.mode)}>
+                <span>{item.icon}</span>
+                <b>{item.label}</b>
+                <small>{item.hint}</small>
+              </button>
+            ))}
+          </div>
+        </Card>
+        <Card className="ai-chat-card">
+          <div className="ai-chat-head">
+            <div><span>{selectedMode.icon}</span><div><h3>{selectedMode.label}</h3><p>{selectedMode.hint}</p></div></div>
+            <small>儿童安全模式</small>
+          </div>
+          <div className="ai-chat-list">
+            {!chat.length && <div className="ai-empty"><span>✨</span><p>把你想练习的内容发给 AI 小助手。</p></div>}
+            {chat.map((item) => (
+              <div key={item.id} className={`ai-message ${item.role}`}>
+                <small>{item.role === "student" ? "我" : item.meta}</small>
+                <p>{item.text}</p>
+              </div>
+            ))}
+          </div>
+          <form className="ai-input-row" onSubmit={send}>
+            <textarea
+              value={message}
+              maxLength={800}
+              placeholder={selectedMode.hint}
+              onChange={(event) => setMessage(event.target.value)}
+            />
+            <Button disabled={busy || !message.trim()}>{busy ? "思考中…" : "发送"}</Button>
+          </form>
+        </Card>
+      </section>
+    </main>
+  );
+}
+
 function StudentHome() {
   const user = session.user!;
   const { language, setLanguage } = useLanguageState();
@@ -108,7 +215,7 @@ function StudentHome() {
   const nextRoom = rooms.find((room) => room.status !== "ended");
   return (
     <div className="student-home">
-      <header className="kid-header"><button className="kid-logo" onClick={() => setActiveView("home")}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></button><nav><button className={activeView === "home" ? "active" : ""} onClick={() => setActiveView("home")}>我的首页</button><button className={activeView === "tasks" ? "active" : ""} onClick={() => setActiveView("tasks")}>学习任务</button><button className={activeView === "treasure" ? "active" : ""} onClick={() => setActiveView("treasure")}>成长宝箱</button></nav><div className="header-actions"><LanguageSwitcher language={language} onChange={setLanguage} /><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></div></header>
+      <header className="kid-header"><button className="kid-logo" onClick={() => setActiveView("home")}><span>★</span><div><b>星星伴学</b><small>快乐学习每一天</small></div></button><nav><button className={activeView === "home" ? "active" : ""} onClick={() => setActiveView("home")}>我的首页</button><button className={activeView === "tasks" ? "active" : ""} onClick={() => setActiveView("tasks")}>学习任务</button><button className={activeView === "treasure" ? "active" : ""} onClick={() => setActiveView("treasure")}>成长宝箱</button><button className={activeView === "ai" ? "active" : ""} onClick={() => setActiveView("ai")}>AI 陪练</button></nav><div className="header-actions"><LanguageSwitcher language={language} onChange={setLanguage} /><div className="kid-profile"><div><b>{user.name}</b><small>今天也要加油呀！</small></div><span>{user.name.slice(0, 1)}</span><button onClick={() => { session.clear(); location.href = appUrl(); }}>↪</button></div></div></header>
       {activeView === "home" && <main>
         <section className="hero-card"><div className="hero-copy"><span>🌞 新的一天</span><h1>{user.name}，今天也要<br/><em>元气满满</em>地学习哦！</h1><p>认真完成每一次小挑战，星星就会越来越多 ✨</p>{nextRoom ? <Button onClick={() => { location.href = appUrl(`classroom/${nextRoom.id}`); }}>{nextRoom.status === "active" ? "老师正在等你，进入课堂" : "进入今天的课堂"}　→</Button> : <Button disabled>等待老师创建课堂</Button>}</div><div className="hero-art"><div className="sun">☀️</div><div className="book-kid">📚</div><span className="hero-star s1">★</span><span className="hero-star s2">★</span></div></section>
         {error && <p className="error">{error}</p>}
@@ -147,6 +254,7 @@ function StudentHome() {
           </div>
         </Card>
       </main>}
+      {activeView === "ai" && <AiPracticeAssistant language={language} />}
     </div>
   );
 }

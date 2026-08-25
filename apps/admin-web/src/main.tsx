@@ -39,6 +39,17 @@ interface LogRow {
   fromUser?: { name: string }; room?: { title: string }; actor?: { name: string; email: string };
   targetType?: string;
 }
+interface AiLogRow {
+  id: string;
+  mode: string;
+  provider: string;
+  success: boolean;
+  promptLength: number;
+  responseLength: number;
+  fallbackReason?: string | null;
+  createdAt: string;
+  user?: { name: string; role: string };
+}
 
 function useLanguageState() {
   const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
@@ -83,6 +94,7 @@ function AdminApp() {
   const [rewards, setRewards] = useState<RewardRow[]>([]);
   const [signals, setSignals] = useState<LogRow[]>([]);
   const [audits, setAudits] = useState<LogRow[]>([]);
+  const [aiLogs, setAiLogs] = useState<AiLogRow[]>([]);
   const [showUserForm, setShowUserForm] = useState(false);
   const [showGroupForm, setShowGroupForm] = useState(false);
   const [notice, setNotice] = useState("");
@@ -95,9 +107,10 @@ function AdminApp() {
         api<Classroom[]>("/api/rooms"),
         api<RewardRow[]>("/api/logs/rewards"),
         api<LogRow[]>("/api/logs/signals"),
-        api<LogRow[]>("/api/logs/audit")
+        api<LogRow[]>("/api/logs/audit"),
+        api<AiLogRow[]>("/api/logs/ai")
       ]);
-      setUsers(data[0]); setGroups(data[1]); setRooms(data[2]); setRewards(data[3]); setSignals(data[4]); setAudits(data[5]);
+      setUsers(data[0]); setGroups(data[1]); setRooms(data[2]); setRewards(data[3]); setSignals(data[4]); setAudits(data[5]); setAiLogs(data[6]);
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : "数据加载失败"); }
   };
   useEffect(() => { void load(); }, []);
@@ -114,7 +127,7 @@ function AdminApp() {
         {tab === "groups" && <Groups groups={groups} action={() => setShowGroupForm(true)} />}
         {tab === "classes" && <Classes rooms={rooms} />}
         {tab === "rewards" && <Rewards rows={rewards} />}
-        {tab === "logs" && <Logs signals={signals} audits={audits} />}
+        {tab === "logs" && <Logs signals={signals} audits={audits} aiLogs={aiLogs} />}
       </main>
       {showUserForm && <CreateUser onClose={() => setShowUserForm(false)} onCreated={() => { setShowUserForm(false); void load(); }} />}
       {showGroupForm && <CreateGroup teachers={teachers} onClose={() => setShowGroupForm(false)} onCreated={() => { setShowGroupForm(false); void load(); }} />}
@@ -165,8 +178,16 @@ function Rewards({ rows }: { rows: RewardRow[] }) {
   return <div className="admin-body"><Card className="table-card"><div className="panel-title"><div><h3>奖励发送记录</h3><p>所有课堂正向激励均在服务端留痕</p></div></div><table><thead><tr><th>奖励</th><th>课堂</th><th>教师 → 学生</th><th>鼓励语</th><th>时间</th></tr></thead><tbody>{rows.map((row)=><tr key={row.id}><td><span className="reward-icon">{icon[row.rewardType] ?? "🎁"}</span>{label[row.rewardType] ?? row.rewardType}</td><td>{row.room.title}</td><td>{row.teacher.name} → {row.student.name}</td><td>{row.message}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card></div>;
 }
 
-function Logs({ signals, audits }: { signals: LogRow[]; audits: LogRow[] }) {
-  return <div className="admin-body logs-grid"><Card className="table-card"><div className="panel-title"><div><h3>信令日志</h3><p>最近 200 条 WebSocket 控制信令</p></div></div><table><thead><tr><th>类型 / 动作</th><th>发起人</th><th>课堂</th><th>ACK</th><th>时间</th></tr></thead><tbody>{signals.map((row)=><tr key={row.id}><td><b>{row.msgType}</b><small className="id">{row.action}</small></td><td>{row.fromUser?.name}</td><td>{row.room?.title}</td><td><span className="healthy">{row.ackStatus}</span></td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card><Card className="table-card"><div className="panel-title"><div><h3>管理员审计日志</h3><p>账号、分组和分配操作不可抵赖记录</p></div></div><table><thead><tr><th>管理员</th><th>动作</th><th>对象</th><th>时间</th></tr></thead><tbody>{audits.map((row)=><tr key={row.id}><td>{row.actor?.name}</td><td>{row.action}</td><td>{row.targetType}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card></div>;
+const aiModeLabel: Record<string, string> = {
+  vocabulary: "背单词",
+  mental_math: "练口算",
+  picture_retell: "复述绘本",
+  mistake_review: "错题问答",
+  question: "问问题"
+};
+
+function Logs({ signals, audits, aiLogs }: { signals: LogRow[]; audits: LogRow[]; aiLogs: AiLogRow[] }) {
+  return <div className="admin-body logs-grid"><Card className="table-card"><div className="panel-title"><div><h3>信令日志</h3><p>最近 200 条 WebSocket 控制信令</p></div></div><table><thead><tr><th>类型 / 动作</th><th>发起人</th><th>课堂</th><th>ACK</th><th>时间</th></tr></thead><tbody>{signals.map((row)=><tr key={row.id}><td><b>{row.msgType}</b><small className="id">{row.action}</small></td><td>{row.fromUser?.name}</td><td>{row.room?.title}</td><td><span className="healthy">{row.ackStatus}</span></td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card><Card className="table-card"><div className="panel-title"><div><h3>管理员审计日志</h3><p>账号、分组和分配操作不可抵赖记录</p></div></div><table><thead><tr><th>管理员</th><th>动作</th><th>对象</th><th>时间</th></tr></thead><tbody>{audits.map((row)=><tr key={row.id}><td>{row.actor?.name}</td><td>{row.action}</td><td>{row.targetType}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card><Card className="table-card"><div className="panel-title"><div><h3>AI 陪练日志</h3><p>仅记录模式、成功状态和长度，不保存学生原文</p></div></div><table><thead><tr><th>学生</th><th>模式</th><th>来源</th><th>长度</th><th>时间</th></tr></thead><tbody>{aiLogs.map((row)=><tr key={row.id}><td>{row.user?.name}</td><td>{aiModeLabel[row.mode] ?? row.mode}</td><td><span className={row.success ? "healthy" : ""}>{row.success ? row.provider : row.fallbackReason ?? row.provider}</span></td><td>{row.promptLength} / {row.responseLength}</td><td>{new Date(row.createdAt).toLocaleString("zh-CN")}</td></tr>)}</tbody></table></Card></div>;
 }
 
 function CreateUser({ onClose,onCreated }: { onClose():void;onCreated():void }) {

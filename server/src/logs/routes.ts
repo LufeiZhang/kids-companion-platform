@@ -39,3 +39,11 @@ logsRouter.get("/audit", requireAuth(["admin"]), async (_request, response) => {
     take: 200
   }));
 });
+
+logsRouter.get("/ai", requireAuth(["admin"]), async (_request, response) => {
+  response.json(await prisma.aiInteractionLog.findMany({
+    include: { user: { select: { name: true, role: true } } },
+    orderBy: { createdAt: "desc" },
+    take: 200
+  }));
+});

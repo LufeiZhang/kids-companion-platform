@@ -36,6 +36,35 @@
 
 学生端没有任务状态写入接口，不能自行确认完成。
 
+## AI
+
+- `POST /api/ai/practice`：仅学生可调用。body 为 `{ mode, message, language }`
+
+`mode` 支持：
+
+- `vocabulary`：背单词
+- `mental_math`：练口算
+- `picture_retell`：复述绘本
+- `mistake_review`：错题问答
+- `question`：学习提问
+
+返回示例：
+
+```json
+{
+  "provider": "openai",
+  "model": "gpt-5-mini",
+  "mode": "mental_math",
+  "answer": "我们一步一步算：18 + 7 可以先凑成 20...",
+  "encouragement": "你能主动练习很棒。",
+  "followUpQuestion": "要不要再试一道 16 + 8？",
+  "safetyNote": "",
+  "fallbackReason": null
+}
+```
+
+安全边界：前端不会上传摄像头、麦克风、音视频或图片内容；后端只向 AI 发送学生手动输入文字、练习模式、最近任务标题/状态和课后记录摘要。AI 交互日志只保存模式、成功状态、输入/输出长度和 fallback 原因，不保存学生原文。
+
 ## 课件
 
 - `GET /api/courseware`：教师自己的课件
@@ -47,5 +76,6 @@
 - `GET /api/logs/signals`
 - `GET /api/logs/rewards`
 - `GET /api/logs/audit`（仅管理员）
+- `GET /api/logs/ai`（仅管理员）：AI 陪练元数据日志，不含学生原始提问
 
 错误统一返回 `{ "message": "可读错误信息" }`。

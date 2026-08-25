@@ -1,4 +1,4 @@
-import type { AiClassSummary } from "@companion/types";
+import type { AiClassSummary, AiPracticeMode, AiPracticeResponse } from "@companion/types";
 
 export type AiSummaryInput = {
   roomTitle: string;
@@ -32,7 +32,7 @@ type OpenAIResponse = {
 };
 
 const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-const DEFAULT_MODEL = "gpt-5.6-luna";
+const DEFAULT_MODEL = "gpt-5-mini";
 
 const summarySchema = {
   type: "object",
@@ -57,6 +57,37 @@ const summarySchema = {
     "parentSummary"
   ]
 } as const;
+
+const practiceSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    answer: { type: "string" },
+    encouragement: { type: "string" },
+    followUpQuestion: { type: "string" },
+    safetyNote: { type: "string" }
+  },
+  required: ["answer", "encouragement", "followUpQuestion", "safetyNote"]
+} as const;
+
+export type AiPracticeInput = {
+  mode: AiPracticeMode;
+  message: string;
+  language: "zh" | "en";
+  recentTasks: Array<{
+    title: string;
+    detail?: string | null;
+    status: string;
+  }>;
+  recentReports: Array<{
+    durationMinutes: number;
+    focusScore: number;
+    leftPageCount: number;
+    rewardCount: number;
+    completedTaskCount: number;
+    reviewPoints: string[];
+  }>;
+};
 
 export function hasAiSummaryProvider() {
   return Boolean(process.env.OPENAI_API_KEY);
@@ -123,6 +154,26 @@ const systemPrompt = [
   "输出必须是符合 JSON Schema 的对象。"
 ].join("\n");
 
+const practiceModeLabel: Record<AiPracticeMode, string> = {
+  vocabulary: "背单词",
+  mental_math: "练口算",
+  picture_retell: "复述绘本",
+  mistake_review: "错题问答",
+  question: "学习提问"
+};
+
+const practiceSystemPrompt = [
+  "你是儿童远程伴学平台的 AI 陪练助手。",
+  "你的任务是帮助学生背单词、练口算、复述绘本、订正错题和回答学习问题。",
+  "回复必须适合儿童：温和、鼓励、简短、具体，不使用羞辱、恐吓或过度负面评价。",
+  "不要要求学生提供真实姓名、电话、住址、学校、账号密码、家长联系方式等个人信息。",
+  "不要讨论或推断健康诊断、心理诊断、家庭状况、身份特征等敏感信息。",
+  "不要处理摄像头、麦克风、音频、视频或图像内容；你只能基于学生输入的文字和必要学习记录作答。",
+  "遇到危险、自伤、暴力、成人内容或线下见面请求时，安全拒绝，并建议找老师或家长。",
+  "数学题要给出清晰步骤；不要只给答案。",
+  "输出必须是符合 JSON Schema 的对象。"
+].join("\n");
+
 function extractOutputText(data: OpenAIResponse) {
   if (typeof data.output_text === "string" && data.output_text.trim()) return data.output_text;
   const parts = data.output
@@ -176,6 +227,51 @@ function normalizeSummary(parsed: Record<string, unknown>, input: AiSummaryInput
   };
 }
 
+function buildPracticeInput(input: AiPracticeInput) {
+  return {
+    mode: practiceModeLabel[input.mode],
+    language: input.language === "en" ? "English" : "中文",
+    studentMessage: truncate(input.message, 600),
+    recentLearningContext: {
+      tasks: input.recentTasks.map((task) => ({
+        title: truncate(task.title, 80),
+        detail: task.detail ? truncate(task.detail, 120) : null,
+        status: task.status
+      })).slice(0, 6),
+      reports: input.recentReports.map((report) => ({
+        durationMinutes: report.durationMinutes,
+        focusScore: report.focusScore,
+        leftPageCount: report.leftPageCount,
+        rewardCount: report.rewardCount,
+        completedTaskCount: report.completedTaskCount,
+        reviewPoints: report.reviewPoints.map((point) => truncate(point, 80)).slice(0, 5)
+      })).slice(0, 3)
+    },
+    privacy: {
+      sentAudioVideo: false,
+      sentCamera: false,
+      sentMicrophone: false,
+      sentParentContact: false,
+      sentEmail: false,
+      instruction: "Only the student's current text input and limited learning metadata are included."
+    }
+  };
+}
+
+function normalizePracticeReply(parsed: Record<string, unknown>, input: AiPracticeInput): AiPracticeResponse {
+  return {
+    provider: "openai",
+    generatedAt: new Date().toISOString(),
+    model: modelName(),
+    mode: input.mode,
+    answer: asString(parsed.answer, input.language === "en" ? "I can help with that. Let's try it step by step." : "我可以帮你，我们一步一步来。"),
+    encouragement: asString(parsed.encouragement, input.language === "en" ? "Good effort. Keep going." : "你愿意练习就很棒，继续加油。"),
+    followUpQuestion: asString(parsed.followUpQuestion, input.language === "en" ? "Would you like to try another one?" : "要不要再试一道？"),
+    safetyNote: asString(parsed.safetyNote, ""),
+    fallbackReason: null
+  };
+}
+
 export async function generateAiClassSummary(input: AiSummaryInput): Promise<AiClassSummary | null> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
@@ -224,6 +320,58 @@ export async function generateAiClassSummary(input: AiSummaryInput): Promise<AiC
     return normalizeSummary(parseJsonObject(outputText), input);
   } catch (error) {
     console.warn("[ai-summary] OpenAI generation failed; template fallback will be used.", error);
+    return null;
+  }
+}
+
+export async function generateAiPracticeReply(input: AiPracticeInput): Promise<AiPracticeResponse | null> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return null;
+
+  try {
+    const response = await fetch(`${baseUrl()}/responses`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      signal: AbortSignal.timeout(timeoutMs()),
+      body: JSON.stringify({
+        model: modelName(),
+        input: [
+          {
+            role: "system",
+            content: [{ type: "input_text", text: practiceSystemPrompt }]
+          },
+          {
+            role: "user",
+            content: [{ type: "input_text", text: JSON.stringify(buildPracticeInput(input)) }]
+          }
+        ],
+        text: {
+          format: {
+            type: "json_schema",
+            name: "student_practice_reply",
+            strict: true,
+            schema: practiceSchema
+          }
+        },
+        max_output_tokens: 900,
+        store: false
+      })
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => response.statusText);
+      throw new Error(`OpenAI ${response.status}: ${body.slice(0, 300)}`);
+    }
+
+    const data = await response.json() as OpenAIResponse;
+    const outputText = extractOutputText(data);
+    if (!outputText) throw new Error("OpenAI response did not include output_text");
+    return normalizePracticeReply(parseJsonObject(outputText), input);
+  } catch (error) {
+    console.warn("[ai-practice] OpenAI generation failed; template fallback will be used.", error);
     return null;
   }
 }

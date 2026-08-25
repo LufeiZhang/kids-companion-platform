@@ -117,6 +117,26 @@ export interface ClassSessionReport {
   room?: Pick<Classroom, "id" | "title">;
 }
 
+export type AiPracticeMode = "vocabulary" | "mental_math" | "picture_retell" | "mistake_review" | "question";
+
+export interface AiPracticeRequest {
+  mode: AiPracticeMode;
+  message: string;
+  language?: "zh" | "en";
+}
+
+export interface AiPracticeResponse {
+  provider: "template_mvp" | "openai";
+  generatedAt: string;
+  model?: string | null;
+  mode: AiPracticeMode;
+  answer: string;
+  encouragement: string;
+  followUpQuestion: string;
+  safetyNote?: string | null;
+  fallbackReason?: string | null;
+}
+
 export const MESSAGE_ACTIONS = {
   ROOM_EVENT: [
     "JOIN_ROOM", "LEAVE_ROOM", "ROOM_STARTED", "ROOM_ENDED",

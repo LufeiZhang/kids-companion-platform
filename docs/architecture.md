@@ -2,7 +2,7 @@
 
 ## 1. 目标与边界
 
-MVP 优先验证“教学内容为主屏 + 轻量音视频 + 实时引导与奖励”。已支持服务端真实 AI 课后总结，但不实现 Android 强锁屏、录课、计费、家长端 AI 陪练和复杂屏幕共享。
+MVP 优先验证“教学内容为主屏 + 轻量音视频 + 实时引导与奖励”。已支持服务端真实 AI 课后总结和学生 AI 陪练助手，但不实现 Android 强锁屏、录课、计费、家长端和复杂屏幕共享。
 
 ## 2. 逻辑架构
 
@@ -29,7 +29,7 @@ flowchart LR
 - `auth`：密码校验、12 小时 JWT、REST/Socket 双重身份验证。
 - `users`：管理员创建账号；学生支持加入多个分组；教师只读取任一授权分组内的学生。
 - `classes`：房间生命周期、教师所有权、学生成员授权、课堂结束课后记录生成。
-- `ai`：服务端 AI Provider。配置 `OPENAI_API_KEY` 后调用 OpenAI 生成结构化课后总结；未配置或失败时回退模板总结。
+- `ai`：服务端 AI Provider。配置 `OPENAI_API_KEY` 后调用 OpenAI 生成结构化课后总结，并为学生端提供单词、口算、绘本复述、错题问答和学习提问陪练；未配置或失败时回退安全兜底回复。
 - `courseware`：MVP 本地图片/PDF 上传；生产环境替换为 OSS/S3 的预签名上传。
 - `websocket`：验证信令结构、角色、房间归属和目标学生，转发并持久化；课堂公开表扬和番茄钟使用广播信令。
 - `whiteboard`：按页保存笔画，使用 `[0,1]` 比例坐标重绘。
@@ -52,7 +52,7 @@ Socket 网关不信任客户端的 `from_uid`：必须与 JWT 中用户 ID 完�
 
 ## 5. 数据与一致性
 
-PostgreSQL 保存业务数据。学生多分组通过 `StudentGroupMember` 关系表保存，并保留旧 `StudentProfile.groupId` 作为兼容字段。每条合法信令写入 `SignalLog`；白板信令另写 `WhiteboardEvent`；奖励和任务公开表扬另写 `RewardLog`。课堂结束后基于 `SignalLog`、`RewardLog`、任务完成时间和学生加入时间生成 `ClassSessionReport`。如果服务端配置了 `OPENAI_API_KEY`，报告会优先调用 OpenAI Responses API 生成结构化 `aiSummary`，`provider` 标记为 `openai`；如果未配置、超时或调用失败，则标记为 `template_mvp` 并保留 `fallbackReason`。客户端收到 Socket.IO ACK 才视为服务端已接受。`msg_id` 唯一，可避免重试造成重复日志。
+PostgreSQL 保存业务数据。学生多分组通过 `StudentGroupMember` 关系表保存，并保留旧 `StudentProfile.groupId` 作为兼容字段。每条合法信令写入 `SignalLog`；白板信令另写 `WhiteboardEvent`；奖励和任务公开表扬另写 `RewardLog`。课堂结束后基于 `SignalLog`、`RewardLog`、任务完成时间和学生加入时间生成 `ClassSessionReport`。如果服务端配置了 `OPENAI_API_KEY`，报告会优先调用 OpenAI Responses API 生成结构化 `aiSummary`，`provider` 标记为 `openai`；如果未配置、超时或调用失败，则标记为 `template_mvp` 并保留 `fallbackReason`。学生 AI 陪练通过 `AiInteractionLog` 只记录调用元数据，不保存学生原始输入。客户端收到 Socket.IO ACK 才视为服务端已接受。`msg_id` 唯一，可避免重试造成重复日志。
 
 专注分是产品内的学习过程参考分，不是医学或心理评估。MVP 评分因素包括：是否准时进入课堂、页面切出次数、课堂任务完成、举手/表情/番茄钟提前完成反馈、长时间无操作次数。
 
@@ -82,6 +82,7 @@ Offer、Answer、ICE 通过带课堂权限校验的 `RTC_SIGNAL` 转发。`RTCPr
 - 教师只能看到自己负责分组内的学生；学生可属于多个分组，任一分组授权即可生效。管理员采用最小权限；账号、分组、分配操作写审计日志。
 - 日志 payload 不应写入聊天原文、联系方式、音视频内容等敏感数据；配置保留期限和删除机制。
 - AI 课后总结默认 `AI_PRIVACY_MODE=strict`，不向模型请求发送学生真实姓名和真实课堂标题；教师备注仍可能包含敏感内容，生产使用前应增加敏感信息检测和家长授权记录。
+- 学生 AI 陪练不接收摄像头、麦克风、音视频和图片内容；请求中不包含学生邮箱、家长电话、住址等信息。后端有基础敏感词拦截，命中隐私、危险、自伤、成人内容或线下见面请求时返回安全提示。
 
 ## 9. 生产化差距
 
