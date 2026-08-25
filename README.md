@@ -14,6 +14,7 @@
 - 教师布置学习任务并确认完成，学生端只读查看进度
 - PostgreSQL + Prisma 持久化用户、房间、白板事件、信令、奖励与审计日志
 - 浏览器摄像头/麦克风、本地预览和 WebRTC 点对点音视频
+- 真实 AI 课后总结：配置 `OPENAI_API_KEY` 后，课堂结束/刷新记录会调用 OpenAI 生成总结；未配置或调用失败时自动回退模板总结
 - RTCProvider 抽象，后续可替换为 Agora/TRTC
 - 管理后台账号、学生分组、教师分配、课堂/奖励/信令/审计记录
 
@@ -110,6 +111,30 @@ npm run build
 
 MVP 不录课、不做系统级锁屏，也不采集非教学必需的儿童信息。开启摄像头/麦克风时由浏览器显示权限申请，拒绝后仍可继续使用白板；录课须取得家长单独授权。生产环境必须使用 HTTPS/WSS、替换 JWT 密钥、限制上传类型、对联系方式脱敏并配置管理员最小权限。详见 [架构文档](docs/architecture.md)。
 
+## 真实 AI 课后总结
+
+后端支持 OpenAI Responses API。为了保护密钥和儿童隐私，AI 调用只发生在服务端，前端不会接触 `OPENAI_API_KEY`。
+
+本地启用：
+
+```env
+OPENAI_API_KEY="sk-..."
+AI_MODEL="gpt-5.6-luna"
+AI_TIMEOUT_MS=15000
+AI_PRIVACY_MODE="strict"
+```
+
+生成时机：
+
+- 教师结束课堂后，服务端自动生成课后记录。
+- 教师在“课堂记录”中点击“生成记录”或保存教师备注时，会重新生成总结。
+- 如果没有配置 `OPENAI_API_KEY`、OpenAI 请求超时或返回异常，系统会自动使用模板总结，课堂结束流程不会失败。
+
+隐私默认值：
+
+- `AI_PRIVACY_MODE="strict"` 时，不向 AI 请求发送学生真实姓名和真实课堂标题。
+- 设置 `AI_PRIVACY_MODE="off"` 才会发送真实姓名/课堂标题；仅应在已获得必要授权的生产合规场景使用。
+
 ## 当前 RTC 范围
 
 音视频区域已使用 `getUserMedia` 和原生 WebRTC 实现一对一点对点通话，通过现有
@@ -131,5 +156,7 @@ Socket.IO 通道交换 Offer、Answer 和 ICE。MVP 使用公共 STUN；跨严�
 2. 登录 [Render Dashboard](https://dashboard.render.com/)。
 3. 选择 **New > Blueprint**，连接代码仓库并确认 `render.yaml`。
 4. 等待数据库和 Web Service 部署完成，打开 Render 提供的 `onrender.com` 地址。
+
+启用线上真实 AI：在 Render Web Service 的 **Environment** 中新增或填写 `OPENAI_API_KEY`，然后重新部署。`AI_MODEL`、`AI_TIMEOUT_MS` 和 `AI_PRIVACY_MODE` 可按需调整。
 
 免费 Web Service 闲置后会休眠，首次打开可能需要等待唤醒；免费 PostgreSQL 当前为临时方案，请勿存放真实儿童数据。生产环境应升级持久数据库和对象存储。

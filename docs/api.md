@@ -24,7 +24,9 @@
 - `POST /api/rooms/:id/end`：房间教师结束；服务端自动生成课后记录
 - `GET /api/rooms/:id/reports`：查看课后记录；学生只能看自己的记录，教师看本课堂全部学生记录
 - `POST /api/rooms/:id/reports/generate`：教师或管理员手动生成/刷新课后记录
-- `PATCH /api/rooms/:id/reports/:reportId`：教师或管理员保存教师备注，并刷新模板 AI 总结，body 为 `{ "teacherNotes": "..." }`
+- `PATCH /api/rooms/:id/reports/:reportId`：教师或管理员保存教师备注，并刷新 AI 课后总结，body 为 `{ "teacherNotes": "..." }`
+
+课后总结生成优先使用后端 `OPENAI_API_KEY` 配置的真实 AI；未配置、超时或调用失败时自动回退模板总结。返回的 `aiSummary.provider` 为 `openai` 或 `template_mvp`。
 
 ## 学习任务
 

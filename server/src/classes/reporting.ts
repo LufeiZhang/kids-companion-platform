@@ -1,22 +1,8 @@
 import { Prisma } from "@prisma/client";
+import { generateAiClassSummary, hasAiSummaryProvider, type AiSummaryInput } from "../ai/provider.js";
 import { prisma } from "../database/client.js";
 
-type SummaryInput = {
-  roomTitle: string;
-  studentName: string;
-  durationMinutes: number;
-  leftPageCount: number;
-  rewardCount: number;
-  completedTaskCount: number;
-  handRaiseCount: number;
-  feedbackCount: number;
-  earlyFinishCount: number;
-  idleCount: number;
-  focusScore: number;
-  focusScoreReason: string[];
-  taskTitles: string[];
-  teacherNotes?: string | null;
-};
+type SummaryInput = AiSummaryInput;
 
 const json = (value: unknown) => JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -27,7 +13,7 @@ function payloadObject(payload: Prisma.JsonValue): Record<string, unknown> {
     : {};
 }
 
-function buildTemplateSummary(input: SummaryInput) {
+function buildTemplateSummary(input: SummaryInput, fallbackReason?: string) {
   const taskText = input.taskTitles.length
     ? input.taskTitles.join("、")
     : "课堂任务与白板互动";
@@ -53,8 +39,20 @@ function buildTemplateSummary(input: SummaryInput) {
     parentSummary: `${input.studentName} 今天完成了一节 ${input.durationMinutes || "短时"} 分钟的伴学课，专注评分 ${input.focusScore} 分。课堂中老师已记录学习表现，建议家长以鼓励为主，帮助孩子保持稳定节奏。`,
     focusScoreReason: input.focusScoreReason,
     teacherNotes: notes || null,
-    futureAiEnabled: false
+    futureAiEnabled: hasAiSummaryProvider(),
+    fallbackReason: fallbackReason ?? null
   };
+}
+
+async function buildSummary(input: SummaryInput) {
+  const aiSummary = await generateAiClassSummary(input);
+  if (aiSummary) return aiSummary;
+  return buildTemplateSummary(
+    input,
+    hasAiSummaryProvider()
+      ? "真实 AI 生成失败，已自动使用模板总结。"
+      : "未配置 OPENAI_API_KEY，已使用模板总结。"
+  );
 }
 
 function scoreFocus(input: {
@@ -160,7 +158,7 @@ export async function generateClassSessionReports(roomId: string) {
     const onTime = Boolean(membership.joinedAt && membership.joinedAt.getTime() - startedAt.getTime() <= 5 * 60 * 1000);
     const focus = scoreFocus({ onTime, leftPageCount, completedTaskCount, handRaiseCount, feedbackCount, earlyFinishCount, idleCount });
     const teacherNotes = existingByStudent.get(student.id)?.teacherNotes ?? null;
-    const aiSummary = buildTemplateSummary({
+    const summaryInput = {
       roomTitle: room.title,
       studentName: student.name,
       durationMinutes,
@@ -175,7 +173,8 @@ export async function generateClassSessionReports(roomId: string) {
       focusScoreReason: focus.reasons,
       taskTitles,
       teacherNotes
-    });
+    };
+    const aiSummary = await buildSummary(summaryInput);
     reports.push(await prisma.classSessionReport.upsert({
       where: { roomId_studentId: { roomId, studentId: student.id } },
       update: {
@@ -240,7 +239,7 @@ export async function updateReportTeacherNotes(reportId: string, teacherNotes: s
   const focusScoreReason = Array.isArray(existingSummary.focusScoreReason)
     ? existingSummary.focusScoreReason.filter((item): item is string => typeof item === "string")
     : [];
-  const aiSummary = buildTemplateSummary({
+  const aiSummary = await buildSummary({
     roomTitle: report.room.title,
     studentName: report.student.name,
     durationMinutes: report.durationMinutes,

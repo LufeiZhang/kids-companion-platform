@@ -74,8 +74,9 @@ export interface PomodoroPayload {
 }
 
 export interface AiClassSummary {
-  provider: "template_mvp";
+  provider: "template_mvp" | "openai";
   generatedAt: string;
+  model?: string | null;
   learningContent: string;
   studentPerformance: string;
   attention: string;
@@ -85,6 +86,7 @@ export interface AiClassSummary {
   focusScoreReason: string[];
   teacherNotes?: string | null;
   futureAiEnabled: boolean;
+  fallbackReason?: string | null;
 }
 
 export interface ClassSessionReport {
