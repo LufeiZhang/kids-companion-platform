@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import {
   api, API_URL, connectSocket, getLanguagePreference, login, sendSignal, session,
-  setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, type Language
+  setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, translateText, type Language
 } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
 import type {
@@ -37,6 +37,24 @@ const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
     label: room.pomodoroLabel ?? undefined
   };
 };
+
+function useDismissibleOverlay(onDone: () => void, durationMs: number, resetKey: unknown) {
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => onDoneRef.current(), durationMs);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDoneRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [durationMs, resetKey]);
+}
 
 function useLanguageState() {
   const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
@@ -260,34 +278,37 @@ function StudentHome() {
 }
 
 function RewardOverlay({ reward, onDone }: { reward: RewardPayload; onDone(): void }) {
-  useEffect(() => {
-    const timer = setTimeout(onDone, reward.duration || 3200);
-    return () => clearTimeout(timer);
-  }, [reward, onDone]);
+  const { language } = useLanguageState();
+  useDismissibleOverlay(onDone, reward.duration || 3200, reward);
   const symbol = reward.reward_type === "red_flower" ? "🌸" : reward.reward_type === "trophy" ? "🏆" : reward.reward_type === "confetti" ? "🎉" : "⭐";
+  const title = language === "en"
+    ? reward.reward_type === "trophy" ? "You earned a trophy!" : "Great job!"
+    : reward.reward_type === "trophy" ? "获得一座奖杯！" : "你真棒！";
   return (
-    <div className={`reward-overlay ${reward.reward_type}`}>
+    <div className={`reward-overlay ${reward.reward_type}`} role="dialog" aria-modal="true" onClick={onDone}>
+      <button type="button" className="overlay-close" aria-label="关闭" onClick={(event) => { event.stopPropagation(); onDone(); }}>×</button>
       <div className="reward-particles">{Array.from({ length: 26 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties}>{symbol}</i>)}</div>
-      <div className="reward-card"><span>{symbol}</span><h2>{reward.reward_type === "trophy" ? "获得一座奖杯！" : "你真棒！"}</h2><p>{reward.message}</p><div>老师为你点赞啦 👍</div></div>
+      <div className="reward-card" onClick={(event) => event.stopPropagation()}><span>{symbol}</span><h2>{title}</h2><p>{translateText(reward.message ?? "", language)}</p><div>老师为你点赞啦 👍</div></div>
     </div>
   );
 }
 
 function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
-  useEffect(() => {
-    const timer = setTimeout(onDone, praise.duration || 4200);
-    return () => clearTimeout(timer);
-  }, [praise, onDone]);
+  const { language } = useLanguageState();
+  useDismissibleOverlay(onDone, praise.duration || 4200, praise);
+  const studentName = translateText(praise.student_name, language);
+  const taskTitle = praise.task_title ? translateText(praise.task_title, language) : "";
   return (
-    <div className={`class-praise-overlay ${praise.animation}`}>
+    <div className={`class-praise-overlay ${praise.animation}`} role="dialog" aria-modal="true" onClick={onDone}>
+      <button type="button" className="overlay-close" aria-label="关闭" onClick={(event) => { event.stopPropagation(); onDone(); }}>×</button>
       <div className="praise-rays" />
       <div className="praise-particles">{Array.from({ length: 34 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties}>⭐</i>)}</div>
-      <div className="class-praise-card">
+      <div className="class-praise-card" onClick={(event) => event.stopPropagation()}>
         <span>👏</span>
-        <small>全班为TA鼓掌</small>
-        <h2>{praise.student_name} 完成任务啦！</h2>
-        {praise.task_title && <b>《{praise.task_title}》</b>}
-        <p>{praise.message}</p>
+        <small>{language === "en" ? "Whole-class Applause" : "全班为TA鼓掌"}</small>
+        <h2>{language === "en" ? `${studentName} completed a task!` : `${studentName} 完成任务啦！`}</h2>
+        {taskTitle && <b>{language === "en" ? `"${taskTitle}"` : `《${taskTitle}》`}</b>}
+        <p>{translateText(praise.message, language)}</p>
       </div>
     </div>
   );

@@ -56,6 +56,24 @@ const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
   };
 };
 
+function useDismissibleOverlay(onDone: () => void, durationMs: number, resetKey: unknown) {
+  const onDoneRef = useRef(onDone);
+  useEffect(() => {
+    onDoneRef.current = onDone;
+  }, [onDone]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => onDoneRef.current(), durationMs);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDoneRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [durationMs, resetKey]);
+}
+
 function useLanguageState() {
   const [language, setLanguageState] = useState<Language>(() => getLanguagePreference());
   useEffect(() => subscribeLanguagePreference(setLanguageState), []);
@@ -443,20 +461,21 @@ function TeacherPomodoroPanel({ minutes, setMinutes, pomodoro, remainingSeconds,
 }
 
 function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
-  useEffect(() => {
-    const timer = setTimeout(onDone, praise.duration || 4200);
-    return () => clearTimeout(timer);
-  }, [praise, onDone]);
+  const { language } = useLanguageState();
+  useDismissibleOverlay(onDone, praise.duration || 4200, praise);
+  const studentName = translateText(praise.student_name, language);
+  const taskTitle = praise.task_title ? translateText(praise.task_title, language) : "";
   return (
-    <div className={`class-praise-overlay ${praise.animation}`}>
+    <div className={`class-praise-overlay ${praise.animation}`} role="dialog" aria-modal="true" onClick={onDone}>
+      <button type="button" className="overlay-close" aria-label="关闭" onClick={(event) => { event.stopPropagation(); onDone(); }}>×</button>
       <div className="praise-rays" />
       <div className="praise-particles">{Array.from({ length: 32 }, (_, index) => <i key={index} style={{ "--i": index } as React.CSSProperties}>★</i>)}</div>
-      <div className="class-praise-card">
+      <div className="class-praise-card" onClick={(event) => event.stopPropagation()}>
         <span>👏</span>
-        <small>全班表扬</small>
-        <h2>{praise.student_name} 完成任务啦！</h2>
-        {praise.task_title && <b>《{praise.task_title}》</b>}
-        <p>{praise.message}</p>
+        <small>{language === "en" ? "Whole-class Praise" : "全班表扬"}</small>
+        <h2>{language === "en" ? `${studentName} completed a task!` : `${studentName} 完成任务啦！`}</h2>
+        {taskTitle && <b>{language === "en" ? `"${taskTitle}"` : `《${taskTitle}》`}</b>}
+        <p>{translateText(praise.message, language)}</p>
       </div>
     </div>
   );
