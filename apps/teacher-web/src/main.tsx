@@ -136,6 +136,7 @@ function Shell({ children, active, onNavigate }: { children: React.ReactNode; ac
 }
 
 function Dashboard() {
+  const { language } = useLanguageState();
   const [students, setStudents] = useState<User[]>([]);
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [groups, setGroups] = useState<TeacherGroup[]>([]);
@@ -173,6 +174,7 @@ function Dashboard() {
     }
   };
   useEffect(() => { void load(); }, []);
+  const activeRoomCount = rooms.filter((room) => room.status !== "ended").length;
   const weeklyRewards = rewards.filter(({ createdAt }) => Date.now() - new Date(createdAt).getTime() < 7 * 24 * 60 * 60 * 1000);
   const showTodayClasses = () => {
     document.querySelector<HTMLElement>(".schedule")?.scrollIntoView({
@@ -290,10 +292,10 @@ function Dashboard() {
   return (
     <Shell active={activeTab} onNavigate={setActiveTab}>
       {activeTab === "首页" && <>
-      <section className="welcome-strip"><div><small>WED · 今日教学</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>你今天有 {rooms.filter((room) => room.status !== "ended").length} 节待进行课堂，{students.length} 位学生等待陪伴。</p></div><Button onClick={() => openCreate()}>＋ 创建课堂</Button></section>
+      <section className="welcome-strip"><div><small>{language === "en" ? "WED · Today's Teaching" : "WED · 今日教学"}</small><h1>让专注自然发生，让鼓励及时抵达。</h1><p>{language === "en" ? <>You have {activeRoomCount} upcoming class(es), with {students.length} student(s) waiting.</> : <>你今天有 {activeRoomCount} 节待进行课堂，{students.length} 位学生等待陪伴。</>}</p></div><Button onClick={() => openCreate()}>＋ 创建课堂</Button></section>
       {error && <p className="error">{error}</p>}
       <div className="stat-grid">
-        <button className="stat-link" onClick={showTodayClasses}><Card><span className="stat-icon blue">◷</span><div><small>今日课程</small><strong>{rooms.length}</strong><p>待进行 {rooms.filter((room) => room.status !== "ended").length} 节</p></div><i>›</i></Card></button>
+        <button className="stat-link" onClick={showTodayClasses}><Card><span className="stat-icon blue">◷</span><div><small>今日课程</small><strong>{rooms.length}</strong><p>{language === "en" ? `${activeRoomCount} upcoming` : <>待进行 {activeRoomCount} 节</>}</p></div><i>›</i></Card></button>
         <button className="stat-link" onClick={() => setActiveTab("我的学生")}><Card><span className="stat-icon cyan">♙</span><div><small>我的学生</small><strong>{students.length}</strong><p>已分配学生</p></div><i>›</i></Card></button>
         <button className="stat-link" onClick={() => setActiveTab("奖励记录")}><Card><span className="stat-icon orange">✿</span><div><small>本周奖励</small><strong>{weeklyRewards.length}</strong><p>查看即时奖励记录</p></div><i>›</i></Card></button>
       </div>
