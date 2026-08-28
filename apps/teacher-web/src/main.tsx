@@ -540,6 +540,8 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const socketRef = useRef<Socket | null>(null);
   const [room, setRoom] = useState<Classroom | null>(null);
   const [incoming, setIncoming] = useState<SignalMessage | null>(null);
+  const [rtcMessages, setRtcMessages] = useState<SignalMessage<RTCSignalPayload>[]>([]);
+  const [rtcReadyKey, setRtcReadyKey] = useState(0);
   const [page, setPage] = useState(1);
   const [online, setOnline] = useState<Record<string, "online" | "hidden" | "offline">>({});
   const [courseware, setCourseware] = useState<Courseware[]>([]);
@@ -632,11 +634,16 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     const socket = connectSocket();
     socketRef.current = socket;
     socket.on("connect", () => {
-      void emit(makeSignal("ROOM_EVENT", "JOIN_ROOM", {}));
+      void emit(makeSignal("ROOM_EVENT", "JOIN_ROOM", {})).then((ok) => {
+        if (ok) setRtcReadyKey((value) => value + 1);
+      });
       void emit(makeSignal("ROOM_EVENT", "ROOM_STARTED", {}));
     });
     socket.on("signal", (message: SignalMessage) => {
       setIncoming(message);
+      if (message.msg_type === "RTC_SIGNAL") {
+        setRtcMessages((current) => [...current.slice(-160), message as SignalMessage<RTCSignalPayload>]);
+      }
       if (message.msg_type === "STUDENT_STATUS") {
         setOnline((current) => ({
           ...current,
@@ -648,6 +655,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           ...current,
           [message.from_uid]: message.action === "USER_OFFLINE" ? "offline" : "online"
         }));
+        if (message.action === "JOIN_ROOM" || message.action === "USER_ONLINE") setRtcReadyKey((value) => value + 1);
       }
       if (message.msg_type === "STUDENT_INTERACTION") {
         const payload = message.payload as unknown as StudentInteractionPayload;
@@ -831,7 +839,8 @@ function ClassroomPage({ roomId }: { roomId: string }) {
       teacherId={user.id}
       initiator
       peerIds={classroomStudents.map(({ id }) => id)}
-      incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
+      incoming={rtcMessages}
+      readyKey={rtcReadyKey}
       sendRTC={sendRTC}
     >
       <div className="classroom-page">

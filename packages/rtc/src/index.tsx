@@ -55,7 +55,8 @@ interface RTCProviderProps {
   teacherId?: string;
   initiator?: boolean;
   peerIds?: string[];
-  incoming?: RTCMessage | null;
+  incoming?: RTCMessage | RTCMessage[] | null;
+  readyKey?: string | number;
   sendRTC?: SendRTC;
 }
 
@@ -202,7 +203,7 @@ async function createVirtualBackgroundTrack(rawTrack: MediaStreamTrack, backgrou
   };
 }
 
-export function RTCProvider({ children, selfId, teacherId, initiator = false, peerIds = [], incoming, sendRTC }: RTCProviderProps) {
+export function RTCProvider({ children, selfId, teacherId, initiator = false, peerIds = [], incoming, readyKey = 0, sendRTC }: RTCProviderProps) {
   const peersRef = useRef<Map<string, PeerBundle>>(new Map());
   const localRef = useRef<MediaStream>(new MediaStream());
   const sendRef = useRef(sendRTC);
@@ -350,19 +351,23 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       });
     }
     void renegotiatePeers(nextPeerIds);
-  }, [peerIdsKey, renegotiatePeers]);
+  }, [peerIdsKey, readyKey, renegotiatePeers]);
 
   useEffect(() => {
-    if (!incoming || handledMessages.current.has(incoming.msg_id)) return;
-    handledMessages.current.add(incoming.msg_id);
-    if (handledMessages.current.size > 200) {
-      const first = handledMessages.current.values().next().value;
-      if (first) handledMessages.current.delete(first);
+    const messages = Array.isArray(incoming) ? incoming : incoming ? [incoming] : [];
+    const unhandled = messages.filter((message) => !handledMessages.current.has(message.msg_id));
+    if (!unhandled.length) return;
+    for (const message of unhandled) {
+      handledMessages.current.add(message.msg_id);
+      if (handledMessages.current.size > 500) {
+        const first = handledMessages.current.values().next().value;
+        if (first) handledMessages.current.delete(first);
+      }
     }
-    const handle = async () => {
+    const handle = async (message: RTCMessage) => {
       try {
-        const peerId = incoming.from_uid;
-        if (incoming.action === "RTC_READY") {
+        const peerId = message.from_uid;
+        if (message.action === "RTC_READY") {
           const bundle = ensurePeer(peerId);
           await attachLocalTracks(bundle.peer);
           if (shouldCreateOffer(peerId)) await createOffer(peerId);
@@ -370,28 +375,31 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         }
         const bundle = ensurePeer(peerId);
         const peer = bundle.peer;
-        if (incoming.action === "RTC_OFFER" && incoming.payload.description) {
+        if (message.action === "RTC_OFFER" && message.payload.description) {
           await attachLocalTracks(peer);
-          await peer.setRemoteDescription(incoming.payload.description);
+          await peer.setRemoteDescription(message.payload.description);
           await flushCandidates(bundle);
           const answer = await peer.createAnswer();
           await peer.setLocalDescription(answer);
           sendToPeer(peerId, "RTC_ANSWER", { description: peer.localDescription ?? answer });
         }
-        if (incoming.action === "RTC_ANSWER" && incoming.payload.description) {
+        if (message.action === "RTC_ANSWER" && message.payload.description) {
           if (peer.signalingState !== "have-local-offer") return;
-          await peer.setRemoteDescription(incoming.payload.description);
+          await peer.setRemoteDescription(message.payload.description);
           await flushCandidates(bundle);
         }
-        if (incoming.action === "ICE_CANDIDATE" && incoming.payload.candidate) {
-          if (peer.remoteDescription) await peer.addIceCandidate(incoming.payload.candidate);
-          else bundle.pendingCandidates.push(incoming.payload.candidate);
+        if (message.action === "ICE_CANDIDATE" && message.payload.candidate) {
+          if (peer.remoteDescription) await peer.addIceCandidate(message.payload.candidate);
+          else bundle.pendingCandidates.push(message.payload.candidate);
         }
       } catch (reason) {
         setError(permissionMessage(reason));
       }
     };
-    void handle();
+    const run = async () => {
+      for (const message of unhandled) await handle(message);
+    };
+    void run();
   }, [attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
 
   const stopVirtualOutput = useCallback(() => {

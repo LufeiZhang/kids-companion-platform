@@ -436,6 +436,8 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const socketRef = useRef<Socket | null>(null);
   const [room, setRoom] = useState<Classroom | null>(null);
   const [incoming, setIncoming] = useState<SignalMessage | null>(null);
+  const [rtcMessages, setRtcMessages] = useState<SignalMessage<RTCSignalPayload>[]>([]);
+  const [rtcReadyKey, setRtcReadyKey] = useState(0);
   const [page, setPage] = useState(1);
   const [courseware, setCourseware] = useState<{ url?: string; type?: "image" | "pdf" }>({});
   const [reward, setReward] = useState<RewardPayload | null>(null);
@@ -504,13 +506,19 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     socketRef.current = socket;
     socket.on("connect", () => {
       setConnection("已连线");
-      send(message("ROOM_EVENT", "JOIN_ROOM", {}));
+      void sendSignal(socket, message("ROOM_EVENT", "JOIN_ROOM", {})).then((ack) => {
+        if (ack.ok) setRtcReadyKey((value) => value + 1);
+        else setConnection(ack.error ?? "加入课堂失败");
+      });
       send(message("ROOM_EVENT", "USER_ONLINE", {}));
       sendStatus("PAGE_VISIBLE");
     });
     socket.on("disconnect", () => setConnection("连接中断，正在重试…"));
     socket.on("signal", (signal: SignalMessage) => {
       setIncoming(signal);
+      if (signal.msg_type === "RTC_SIGNAL") {
+        setRtcMessages((current) => [...current.slice(-160), signal as SignalMessage<RTCSignalPayload>]);
+      }
       if (signal.msg_type === "COURSEWARE_CONTROL") {
         const payload = signal.payload as unknown as CoursewarePayload;
         setPage(payload.page ?? 1);
@@ -531,7 +539,10 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         setPomodoro(payload);
         if (signal.action === "START_POMODORO" || signal.action === "RESUME_POMODORO") setPomodoroFinishedEarly(false);
       }
-      if (signal.msg_type === "ROOM_EVENT" && signal.action === "ROOM_ENDED") setEnded(true);
+      if (signal.msg_type === "ROOM_EVENT") {
+        if (signal.action === "ROOM_ENDED") setEnded(true);
+        if (signal.action === "JOIN_ROOM" || signal.action === "USER_ONLINE") setRtcReadyKey((value) => value + 1);
+      }
     });
     const visibility = () => sendStatus(document.hidden ? "PAGE_HIDDEN" : "PAGE_VISIBLE");
     document.addEventListener("visibilitychange", visibility);
@@ -583,7 +594,8 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       teacherId={room.teacherId}
       initiator={false}
       peerIds={rtcPeerIds}
-      incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
+      incoming={rtcMessages}
+      readyKey={rtcReadyKey}
       sendRTC={sendRTC}
     >
       <div className="student-classroom">
