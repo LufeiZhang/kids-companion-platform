@@ -553,30 +553,42 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
   const rtc = useRTC();
   const stream = source === "local" ? rtc.localStream : ((peerId ? rtc.remoteStreams[peerId] : rtc.remoteStream) ?? null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
   const isMuted = muted ?? source === "local";
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.srcObject = stream;
-    video.muted = isMuted;
+    video.srcObject = stream ? new MediaStream(stream.getVideoTracks()) : null;
+    video.muted = true;
     setPlayBlocked(false);
     if (!stream) return;
     const play = video.play();
-    if (play) play.catch(() => {
-      if (!isMuted) setPlayBlocked(true);
-    });
+    if (play) play.catch(() => undefined);
+  }, [stream]);
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.srcObject = !isMuted && stream?.getAudioTracks().length ? new MediaStream(stream.getAudioTracks()) : null;
+    setPlayBlocked(false);
+    if (!audio.srcObject) return;
+    const play = audio.play();
+    if (play) play.catch(() => setPlayBlocked(true));
   }, [isMuted, stream]);
   const hasVideo = Boolean(stream?.getVideoTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const hasAudio = Boolean(stream?.getAudioTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const active = hasVideo || hasAudio;
   return (
     <div className={`video-tile ${childFriendly ? "video-tile--child" : ""} ${active ? "is-live" : ""}`}>
-      <video ref={videoRef} autoPlay playsInline muted={isMuted} />
+      <video ref={videoRef} autoPlay playsInline muted />
+      <audio ref={audioRef} autoPlay />
       {!hasVideo && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{hasAudio ? "已连接语音" : source === "local" ? "点击摄像头按钮开启" : "等待对方开启摄像头"}</small></div>}
       {active && <span className="video-label">● {label}{hasAudio && !hasVideo ? " · 语音" : ""}</span>}
       {playBlocked && <button type="button" className="video-play-button" onClick={() => {
-        void videoRef.current?.play().then(() => setPlayBlocked(false));
+        void Promise.allSettled([
+          videoRef.current?.play(),
+          audioRef.current?.play()
+        ]).then(() => setPlayBlocked(false));
       }}>点击播放声音</button>}
     </div>
   );
