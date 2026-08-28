@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import {
-  api, API_URL, connectSocket, getLanguagePreference, login, sendSignal, session,
+  api, API_URL, connectSocket, getLanguagePreference, login, playCelebrationSound, sendSignal, session,
   setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, translateText, type Language
 } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
@@ -445,12 +445,37 @@ function TeacherVideoPanel({ studentId, studentName, studentState, selected, onS
 
 function TeacherRTCControls() {
   const rtc = useRTC();
+  const backgroundUrlRef = useRef<string | null>(null);
+  const [backgroundName, setBackgroundName] = useState("");
+  const chooseBackground = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+    const url = URL.createObjectURL(file);
+    backgroundUrlRef.current = url;
+    setBackgroundName(file.name);
+    await rtc.setVirtualBackground(url);
+  };
+  const clearBackground = async () => {
+    await rtc.setVirtualBackground(null);
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+    backgroundUrlRef.current = null;
+    setBackgroundName("");
+  };
+  useEffect(() => () => {
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+  }, []);
   return (
     <div className="teacher-self-card">
       <div className="teacher-local-video"><VideoTile label="我的画面" source="local" muted /></div>
       <div className="teacher-rtc-controls">
         <button className={rtc.cameraOn ? "active" : ""} onClick={() => void rtc.toggleCamera()}>{rtc.cameraOn ? "📹 关闭摄像头" : "📷 开启摄像头"}</button>
         <button className={rtc.micOn ? "active" : ""} onClick={() => void rtc.toggleMic()}>{rtc.micOn ? "🎙️ 关闭麦克风" : "🎤 开启麦克风"}</button>
+      </div>
+      <div className="virtual-bg-controls">
+        <label className={rtc.virtualBackgroundUrl ? "active" : ""}>🖼️ 选择虚拟背景<input hidden type="file" accept="image/*" onChange={chooseBackground} /></label>
+        <button type="button" disabled={!rtc.virtualBackgroundUrl} onClick={() => void clearBackground()}>清除背景</button>
+        <small>{rtc.virtualBackgroundUrl ? `已选择：${backgroundName || "自选图片"}` : "对方会看到自选背景画布 + 摄像头画面"}</small>
       </div>
       <small className="rtc-privacy">🔒 仅用于本次课堂通话，不录音录像</small>
       {rtc.error && <div className="teacher-rtc-error">⚠ {rtc.error}</div>}
@@ -489,6 +514,7 @@ function TeacherPomodoroPanel({ minutes, setMinutes, pomodoro, remainingSeconds,
 
 function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
   const { language } = useLanguageState();
+  useEffect(() => playCelebrationSound("praise"), [praise]);
   useDismissibleOverlay(onDone, praise.duration || 4200, praise);
   const studentName = translateText(praise.student_name, language);
   const taskTitle = praise.task_title ? translateText(praise.task_title, language) : "";
@@ -801,6 +827,8 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   if (!room) return <div className="loading">正在准备课堂空间…</div>;
   return (
     <RTCProvider
+      selfId={user.id}
+      teacherId={user.id}
       initiator
       peerIds={classroomStudents.map(({ id }) => id)}
       incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}

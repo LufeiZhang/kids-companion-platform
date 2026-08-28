@@ -43,12 +43,16 @@ interface RTCContextValue {
   connectionState: RTCPeerConnectionState | "idle";
   connectionStates: Record<string, RTCPeerConnectionState | "idle">;
   error: string;
+  virtualBackgroundUrl: string | null;
   toggleCamera(): Promise<boolean>;
   toggleMic(): Promise<boolean>;
+  setVirtualBackground(imageUrl: string | null): Promise<void>;
 }
 
 interface RTCProviderProps {
   children: ReactNode;
+  selfId?: string;
+  teacherId?: string;
   initiator?: boolean;
   peerIds?: string[];
   incoming?: RTCMessage | null;
@@ -68,32 +72,184 @@ function permissionMessage(error: unknown) {
   return `无法开启音视频设备：${error.message}`;
 }
 
-export function RTCProvider({ children, initiator = false, peerIds = [], incoming, sendRTC }: RTCProviderProps) {
+function loadImage(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("虚拟背景图片加载失败"));
+    image.src = src;
+  });
+}
+
+function waitForVideo(video: HTMLVideoElement) {
+  return new Promise<void>((resolve) => {
+    if (video.readyState >= video.HAVE_METADATA) {
+      resolve();
+      return;
+    }
+    const done = () => resolve();
+    video.onloadedmetadata = done;
+    window.setTimeout(done, 600);
+  });
+}
+
+function drawCover(
+  context: CanvasRenderingContext2D,
+  source: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  targetX: number,
+  targetY: number,
+  targetWidth: number,
+  targetHeight: number
+) {
+  const sourceRatio = sourceWidth / sourceHeight;
+  const targetRatio = targetWidth / targetHeight;
+  const cropWidth = sourceRatio > targetRatio ? sourceHeight * targetRatio : sourceWidth;
+  const cropHeight = sourceRatio > targetRatio ? sourceHeight : sourceWidth / targetRatio;
+  const cropX = (sourceWidth - cropWidth) / 2;
+  const cropY = (sourceHeight - cropHeight) / 2;
+  context.drawImage(source, cropX, cropY, cropWidth, cropHeight, targetX, targetY, targetWidth, targetHeight);
+}
+
+function roundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
+
+async function createVirtualBackgroundTrack(rawTrack: MediaStreamTrack, backgroundUrl: string) {
+  const settings = rawTrack.getSettings();
+  const width = Math.max(640, Number(settings.width) || 1280);
+  const height = Math.max(360, Number(settings.height) || 720);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context || typeof canvas.captureStream !== "function") throw new Error("当前浏览器不支持虚拟背景画布");
+
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = new MediaStream([rawTrack]);
+  await video.play().catch(() => undefined);
+  await waitForVideo(video);
+  const image = await loadImage(backgroundUrl);
+
+  let frame = 0;
+  let stopped = false;
+  const render = () => {
+    if (stopped) return;
+    context.clearRect(0, 0, width, height);
+    drawCover(context, image, image.naturalWidth || width, image.naturalHeight || height, 0, 0, width, height);
+    context.fillStyle = "rgba(255, 255, 255, 0.72)";
+    context.fillRect(0, 0, width, height);
+    context.fillStyle = "#315f9d";
+    context.font = `700 ${Math.round(width * 0.038)}px system-ui, sans-serif`;
+    context.textAlign = "center";
+    context.fillText("Companion Learning Classroom", width / 2, height * 0.12);
+
+    const videoWidth = video.videoWidth || width;
+    const videoHeight = video.videoHeight || height;
+    const cardWidth = width * 0.56;
+    const cardHeight = cardWidth * 0.62;
+    const x = (width - cardWidth) / 2;
+    const y = height * 0.2;
+    context.save();
+    context.shadowColor = "rgba(29, 52, 87, 0.32)";
+    context.shadowBlur = width * 0.035;
+    context.shadowOffsetY = height * 0.018;
+    roundedRect(context, x - width * 0.012, y - width * 0.012, cardWidth + width * 0.024, cardHeight + width * 0.024, width * 0.035);
+    context.fillStyle = "white";
+    context.fill();
+    roundedRect(context, x, y, cardWidth, cardHeight, width * 0.03);
+    context.clip();
+    drawCover(context, video, videoWidth, videoHeight, x, y, cardWidth, cardHeight);
+    context.restore();
+
+    context.fillStyle = "rgba(255, 255, 255, 0.82)";
+    roundedRect(context, width * 0.18, height * 0.75, width * 0.64, height * 0.11, width * 0.025);
+    context.fill();
+    context.fillStyle = "#456385";
+    context.font = `600 ${Math.round(width * 0.028)}px system-ui, sans-serif`;
+    context.fillText("Custom virtual background", width / 2, height * 0.815);
+    frame = window.requestAnimationFrame(render);
+  };
+  render();
+
+  const outputStream = canvas.captureStream(30);
+  const outputTrack = outputStream.getVideoTracks()[0];
+  if (!outputTrack) throw new Error("虚拟背景视频轨道创建失败");
+  outputTrack.enabled = rawTrack.enabled;
+  return {
+    track: outputTrack,
+    stop() {
+      stopped = true;
+      window.cancelAnimationFrame(frame);
+      video.pause();
+      video.srcObject = null;
+      outputTrack.stop();
+    }
+  };
+}
+
+export function RTCProvider({ children, selfId, teacherId, initiator = false, peerIds = [], incoming, sendRTC }: RTCProviderProps) {
   const peersRef = useRef<Map<string, PeerBundle>>(new Map());
   const localRef = useRef<MediaStream>(new MediaStream());
   const sendRef = useRef(sendRTC);
+  const selfIdRef = useRef(selfId);
+  const teacherIdRef = useRef(teacherId);
   const initiatorRef = useRef(initiator);
   const peerIdsRef = useRef<string[]>(peerIds);
   const handledMessages = useRef<Set<string>>(new Set());
+  const rawVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const outboundVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const virtualStopRef = useRef<(() => void) | null>(null);
+  const virtualBackgroundRef = useRef<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [cameraOn, setCameraOn] = useState(false);
   const [micOn, setMicOn] = useState(false);
   const [connectionStates, setConnectionStates] = useState<Record<string, RTCPeerConnectionState | "idle">>({});
   const [error, setError] = useState("");
+  const [virtualBackgroundUrl, setVirtualBackgroundUrl] = useState<string | null>(null);
+  const createOfferRef = useRef<(peerId: string) => Promise<void>>(async () => undefined);
 
   useEffect(() => { sendRef.current = sendRTC; }, [sendRTC]);
+  useEffect(() => { selfIdRef.current = selfId; }, [selfId]);
+  useEffect(() => { teacherIdRef.current = teacherId; }, [teacherId]);
   useEffect(() => { initiatorRef.current = initiator; }, [initiator]);
-  useEffect(() => { peerIdsRef.current = peerIds; }, [peerIds]);
 
   const allPeerIds = useCallback(() => {
-    const ids = new Set(peerIdsRef.current.filter(Boolean));
+    const self = selfIdRef.current;
+    const ids = new Set(peerIdsRef.current.filter((uid) => Boolean(uid) && uid !== self));
     for (const uid of peersRef.current.keys()) ids.add(uid);
     return [...ids];
   }, []);
 
+  const shouldCreateOffer = useCallback((peerId: string) => {
+    const self = selfIdRef.current;
+    const teacher = teacherIdRef.current;
+    if (!self) return initiatorRef.current;
+    if (teacher) {
+      if (self === teacher) return true;
+      if (peerId === teacher) return false;
+    }
+    if (initiatorRef.current && !teacher) return true;
+    return self < peerId;
+  }, []);
+
   const sendToPeer = useCallback((peerId: string, action: RTCAction, payload: RTCSignalPayload) => {
-    if (!peerId) return;
+    if (!peerId || peerId === selfIdRef.current) return;
     void sendRef.current?.(action, payload, peerId);
   }, []);
 
@@ -134,8 +290,14 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
     peer.onconnectionstatechange = () => {
       setConnectionStates((current) => ({ ...current, [peerId]: peer.connectionState }));
     };
+    peer.oniceconnectionstatechange = () => {
+      if (peer.iceConnectionState === "failed") {
+        peer.restartIce();
+        if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId);
+      }
+    };
     return bundle;
-  }, [sendToPeer]);
+  }, [sendToPeer, shouldCreateOffer]);
 
   const flushCandidates = useCallback(async (bundle: PeerBundle) => {
     const peer = bundle.peer;
@@ -157,17 +319,38 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
     }
   }, [attachLocalTracks, ensurePeer, sendToPeer]);
 
-  const createOffers = useCallback(async (ids = allPeerIds()) => {
-    for (const peerId of ids) await createOffer(peerId);
-  }, [allPeerIds, createOffer]);
+  useEffect(() => { createOfferRef.current = createOffer; }, [createOffer]);
 
-  const announceReady = useCallback(() => {
-    for (const peerId of allPeerIds()) sendToPeer(peerId, "RTC_READY", {});
-  }, [allPeerIds, sendToPeer]);
+  const renegotiatePeers = useCallback(async (ids = allPeerIds()) => {
+    const uniqueIds = [...new Set(ids.filter((uid) => uid && uid !== selfIdRef.current))];
+    for (const peerId of uniqueIds) {
+      const { peer } = ensurePeer(peerId);
+      await attachLocalTracks(peer);
+      if (shouldCreateOffer(peerId)) await createOffer(peerId);
+      else sendToPeer(peerId, "RTC_READY", {});
+    }
+  }, [allPeerIds, attachLocalTracks, createOffer, ensurePeer, sendToPeer, shouldCreateOffer]);
 
+  const peerIdsKey = useMemo(() => peerIds.filter(Boolean).sort().join("|"), [peerIds]);
   useEffect(() => {
-    announceReady();
-  }, [announceReady]);
+    const self = selfIdRef.current;
+    const nextPeerIds = peerIds.filter((uid) => Boolean(uid) && uid !== self);
+    peerIdsRef.current = nextPeerIds;
+    for (const [peerId, { peer }] of peersRef.current) {
+      if (nextPeerIds.includes(peerId)) continue;
+      peer.close();
+      peersRef.current.delete(peerId);
+      setRemoteStreams((current) => {
+        const { [peerId]: _removed, ...rest } = current;
+        return rest;
+      });
+      setConnectionStates((current) => {
+        const { [peerId]: _removed, ...rest } = current;
+        return rest;
+      });
+    }
+    void renegotiatePeers(nextPeerIds);
+  }, [peerIdsKey, renegotiatePeers]);
 
   useEffect(() => {
     if (!incoming || handledMessages.current.has(incoming.msg_id)) return;
@@ -180,8 +363,9 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
       try {
         const peerId = incoming.from_uid;
         if (incoming.action === "RTC_READY") {
-          if (initiatorRef.current) await createOffer(peerId);
-          else sendToPeer(peerId, "RTC_READY", {});
+          const bundle = ensurePeer(peerId);
+          await attachLocalTracks(bundle.peer);
+          if (shouldCreateOffer(peerId)) await createOffer(peerId);
           return;
         }
         const bundle = ensurePeer(peerId);
@@ -208,7 +392,43 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
       }
     };
     void handle();
-  }, [attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, sendToPeer]);
+  }, [attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
+
+  const stopVirtualOutput = useCallback(() => {
+    virtualStopRef.current?.();
+    virtualStopRef.current = null;
+  }, []);
+
+  const installLocalVideoTrack = useCallback(async (track: MediaStreamTrack | null) => {
+    for (const oldTrack of localRef.current.getVideoTracks()) {
+      localRef.current.removeTrack(oldTrack);
+      if (oldTrack !== track && oldTrack !== rawVideoTrackRef.current) oldTrack.stop();
+    }
+    if (track) localRef.current.addTrack(track);
+    outboundVideoTrackRef.current = track;
+    setLocalStream(new MediaStream(localRef.current.getTracks()));
+    await renegotiatePeers();
+  }, [renegotiatePeers]);
+
+  const rebuildVideoOutput = useCallback(async (rawTrack = rawVideoTrackRef.current) => {
+    if (!rawTrack || rawTrack.readyState === "ended") return false;
+    stopVirtualOutput();
+    let outputTrack = rawTrack;
+    const backgroundUrl = virtualBackgroundRef.current;
+    if (backgroundUrl) {
+      try {
+        const virtualOutput = await createVirtualBackgroundTrack(rawTrack, backgroundUrl);
+        virtualStopRef.current = virtualOutput.stop;
+        outputTrack = virtualOutput.track;
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "虚拟背景启用失败，已使用原摄像头画面");
+      }
+    }
+    outputTrack.enabled = rawTrack.enabled;
+    await installLocalVideoTrack(outputTrack);
+    setCameraOn(rawTrack.enabled);
+    return true;
+  }, [installLocalVideoTrack, stopVirtualOutput]);
 
   const addTrack = useCallback(async (kind: "video" | "audio") => {
     if (!navigator.mediaDevices?.getUserMedia) {
@@ -223,51 +443,72 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
       });
       const track = stream.getTracks()[0];
       if (!track) return false;
-      for (const oldTrack of localRef.current.getTracks().filter((item) => item.kind === kind)) {
+      if (kind === "video") {
+        rawVideoTrackRef.current?.stop();
+        rawVideoTrackRef.current = track;
+        track.onended = () => {
+          setCameraOn(false);
+          stopVirtualOutput();
+        };
+        await rebuildVideoOutput(track);
+        return true;
+      }
+
+      for (const oldTrack of localRef.current.getAudioTracks()) {
         oldTrack.stop();
         localRef.current.removeTrack(oldTrack);
       }
       localRef.current.addTrack(track);
       setLocalStream(new MediaStream(localRef.current.getTracks()));
-      if (kind === "video") setCameraOn(true);
-      else setMicOn(true);
-      for (const { peer } of peersRef.current.values()) await attachLocalTracks(peer);
-      if (initiatorRef.current) await createOffers();
-      else announceReady();
+      setMicOn(true);
+      await renegotiatePeers();
       track.onended = () => {
-        if (kind === "video") setCameraOn(false);
-        else setMicOn(false);
+        setMicOn(false);
       };
       return true;
     } catch (reason) {
       setError(permissionMessage(reason));
       return false;
     }
-  }, [announceReady, attachLocalTracks, createOffers]);
+  }, [rebuildVideoOutput, renegotiatePeers, stopVirtualOutput]);
 
   const toggleCamera = useCallback(async () => {
-    const track = localRef.current.getVideoTracks()[0];
-    if (!track || track.readyState === "ended") return addTrack("video");
-    track.enabled = !track.enabled;
-    setCameraOn(track.enabled);
-    announceReady();
-    return track.enabled;
-  }, [addTrack, announceReady]);
+    const rawTrack = rawVideoTrackRef.current;
+    const outputTrack = outboundVideoTrackRef.current ?? localRef.current.getVideoTracks()[0];
+    if (!rawTrack || rawTrack.readyState === "ended" || !outputTrack || outputTrack.readyState === "ended") return addTrack("video");
+    const enabled = !outputTrack.enabled;
+    rawTrack.enabled = enabled;
+    outputTrack.enabled = enabled;
+    setCameraOn(enabled);
+    setLocalStream(new MediaStream(localRef.current.getTracks()));
+    await renegotiatePeers();
+    return enabled;
+  }, [addTrack, renegotiatePeers]);
 
   const toggleMic = useCallback(async () => {
     const track = localRef.current.getAudioTracks()[0];
     if (!track || track.readyState === "ended") return addTrack("audio");
     track.enabled = !track.enabled;
     setMicOn(track.enabled);
-    announceReady();
+    await renegotiatePeers();
     return track.enabled;
-  }, [addTrack, announceReady]);
+  }, [addTrack, renegotiatePeers]);
+
+  const setVirtualBackground = useCallback(async (imageUrl: string | null) => {
+    virtualBackgroundRef.current = imageUrl;
+    setVirtualBackgroundUrl(imageUrl);
+    const rawTrack = rawVideoTrackRef.current;
+    if (rawTrack && rawTrack.readyState !== "ended") await rebuildVideoOutput(rawTrack);
+  }, [rebuildVideoOutput]);
 
   useEffect(() => () => {
+    stopVirtualOutput();
+    const rawTrack = rawVideoTrackRef.current;
+    if (rawTrack && !localRef.current.getTracks().includes(rawTrack)) rawTrack.stop();
     localRef.current.getTracks().forEach((track) => track.stop());
     for (const { peer } of peersRef.current.values()) peer.close();
     peersRef.current.clear();
-  }, []);
+  }, [stopVirtualOutput]);
 
   const remoteStream = useMemo(() => {
     const preferredId = peerIds[0];
@@ -278,8 +519,12 @@ export function RTCProvider({ children, initiator = false, peerIds = [], incomin
     return (preferredId ? connectionStates[preferredId] : undefined) ?? Object.values(connectionStates)[0] ?? "idle";
   }, [connectionStates, peerIds]);
   const value = useMemo<RTCContextValue>(() => ({
-    cameraOn, micOn, localStream, remoteStream, remoteStreams, connectionState, connectionStates, error, toggleCamera, toggleMic
-  }), [cameraOn, connectionState, connectionStates, error, localStream, micOn, remoteStream, remoteStreams, toggleCamera, toggleMic]);
+    cameraOn, micOn, localStream, remoteStream, remoteStreams, connectionState, connectionStates,
+    error, virtualBackgroundUrl, toggleCamera, toggleMic, setVirtualBackground
+  }), [
+    cameraOn, connectionState, connectionStates, error, localStream, micOn, remoteStream, remoteStreams,
+    setVirtualBackground, toggleCamera, toggleMic, virtualBackgroundUrl
+  ]);
 
   return <RTCContext.Provider value={value}>{children}</RTCContext.Provider>;
 }
@@ -300,15 +545,31 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
   const rtc = useRTC();
   const stream = source === "local" ? rtc.localStream : ((peerId ? rtc.remoteStreams[peerId] : rtc.remoteStream) ?? null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [playBlocked, setPlayBlocked] = useState(false);
+  const isMuted = muted ?? source === "local";
   useEffect(() => {
-    if (videoRef.current) videoRef.current.srcObject = stream;
-  }, [stream]);
-  const active = Boolean(stream?.getVideoTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
+    const video = videoRef.current;
+    if (!video) return;
+    video.srcObject = stream;
+    video.muted = isMuted;
+    setPlayBlocked(false);
+    if (!stream) return;
+    const play = video.play();
+    if (play) play.catch(() => {
+      if (!isMuted) setPlayBlocked(true);
+    });
+  }, [isMuted, stream]);
+  const hasVideo = Boolean(stream?.getVideoTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
+  const hasAudio = Boolean(stream?.getAudioTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
+  const active = hasVideo || hasAudio;
   return (
     <div className={`video-tile ${childFriendly ? "video-tile--child" : ""} ${active ? "is-live" : ""}`}>
-      <video ref={videoRef} autoPlay playsInline muted={muted ?? source === "local"} />
-      {!active && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{source === "local" ? "点击摄像头按钮开启" : "等待对方开启摄像头"}</small></div>}
-      {active && <span className="video-label">● {label}</span>}
+      <video ref={videoRef} autoPlay playsInline muted={isMuted} />
+      {!hasVideo && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{hasAudio ? "已连接语音" : source === "local" ? "点击摄像头按钮开启" : "等待对方开启摄像头"}</small></div>}
+      {active && <span className="video-label">● {label}{hasAudio && !hasVideo ? " · 语音" : ""}</span>}
+      {playBlocked && <button type="button" className="video-play-button" onClick={() => {
+        void videoRef.current?.play().then(() => setPlayBlocked(false));
+      }}>点击播放声音</button>}
     </div>
   );
 }

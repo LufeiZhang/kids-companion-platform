@@ -58,5 +58,36 @@ export function sendSignal(socket: Socket, message: SignalMessage<unknown>): Pro
   });
 }
 
+export function playCelebrationSound(kind: "reward" | "praise" = "reward") {
+  const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioContextCtor) return;
+  const context = new AudioContextCtor();
+  const now = context.currentTime;
+  const master = context.createGain();
+  master.gain.setValueAtTime(0.0001, now);
+  master.gain.exponentialRampToValueAtTime(kind === "praise" ? 0.22 : 0.18, now + 0.02);
+  master.gain.exponentialRampToValueAtTime(0.0001, now + 1.05);
+  master.connect(context.destination);
+
+  const notes = kind === "praise"
+    ? [523.25, 659.25, 783.99, 1046.5]
+    : [659.25, 783.99, 987.77];
+  notes.forEach((frequency, index) => {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const start = now + index * 0.13;
+    oscillator.type = index % 2 ? "triangle" : "sine";
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(0.55, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.22);
+    oscillator.connect(gain);
+    gain.connect(master);
+    oscillator.start(start);
+    oscillator.stop(start + 0.24);
+  });
+  window.setTimeout(() => void context.close(), 1300);
+}
+
 export { API_URL };
 export * from "./i18n";

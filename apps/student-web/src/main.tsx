@@ -2,7 +2,7 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import {
-  api, API_URL, connectSocket, getLanguagePreference, login, sendSignal, session,
+  api, API_URL, connectSocket, getLanguagePreference, login, playCelebrationSound, sendSignal, session,
   setLanguagePreference, subscribeLanguagePreference, syncDocumentLanguage, translateText, type Language
 } from "@companion/shared";
 import { RTCProvider, VideoTile, useRTC } from "@companion/rtc";
@@ -279,6 +279,7 @@ function StudentHome() {
 
 function RewardOverlay({ reward, onDone }: { reward: RewardPayload; onDone(): void }) {
   const { language } = useLanguageState();
+  useEffect(() => playCelebrationSound("reward"), [reward]);
   useDismissibleOverlay(onDone, reward.duration || 3200, reward);
   const symbol = reward.reward_type === "red_flower" ? "🌸" : reward.reward_type === "trophy" ? "🏆" : reward.reward_type === "confetti" ? "🎉" : "⭐";
   const title = language === "en"
@@ -295,6 +296,7 @@ function RewardOverlay({ reward, onDone }: { reward: RewardPayload; onDone(): vo
 
 function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePayload; onDone(): void }) {
   const { language } = useLanguageState();
+  useEffect(() => playCelebrationSound("praise"), [praise]);
   useDismissibleOverlay(onDone, praise.duration || 4200, praise);
   const studentName = translateText(praise.student_name, language);
   const taskTitle = praise.task_title ? translateText(praise.task_title, language) : "";
@@ -335,9 +337,25 @@ function ClassroomControls({ sendStatus, sendInteraction }: {
   sendInteraction(action: StudentInteractionAction, payload: StudentInteractionPayload): Promise<boolean>;
 }) {
   const rtc = useRTC();
+  const backgroundUrlRef = useRef<string | null>(null);
   const [handRaised, setHandRaised] = useState(false);
   const [showEmojis, setShowEmojis] = useState(false);
   const [reaction, setReaction] = useState("");
+  const chooseBackground = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+    const url = URL.createObjectURL(file);
+    backgroundUrlRef.current = url;
+    await rtc.setVirtualBackground(url);
+    setReaction("已设置虚拟背景");
+  };
+  const clearBackground = async () => {
+    await rtc.setVirtualBackground(null);
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+    backgroundUrlRef.current = null;
+    setReaction("已清除虚拟背景");
+  };
   const toggleHand = async () => {
     const next = !handRaised;
     if (await sendInteraction(next ? "RAISE_HAND" : "LOWER_HAND", { raised: next })) {
@@ -356,11 +374,16 @@ function ClassroomControls({ sendStatus, sendInteraction }: {
     const timer = setTimeout(() => setReaction(""), 2200);
     return () => clearTimeout(timer);
   }, [reaction]);
+  useEffect(() => () => {
+    if (backgroundUrlRef.current) URL.revokeObjectURL(backgroundUrlRef.current);
+  }, []);
   return (
     <>
       <div className="student-controls">
         <button title="麦克风仅用于本次课堂通话，不会录音" className={!rtc.micOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
         <button title="摄像头仅用于本次课堂通话，不会录像" className={!rtc.cameraOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
+        <label title="选择一张图片作为对方看到的视频背景" className={`control-file ${rtc.virtualBackgroundUrl ? "active" : ""}`}><span>🖼️</span>背景<input hidden type="file" accept="image/*" onChange={chooseBackground} /></label>
+        {rtc.virtualBackgroundUrl && <button title="清除虚拟背景" onClick={() => void clearBackground()}><span>↩</span>清背景</button>}
         <button className={handRaised ? "active" : ""} onClick={() => void toggleHand()}><span>✋</span>{handRaised ? "已举手" : "举手"}</button>
         <button className={showEmojis ? "active" : ""} onClick={() => setShowEmojis((value) => !value)}><span>😊</span>表情</button>
         {showEmojis && <div className="emoji-picker">{["😊", "👍", "🎉", "❤️", "⭐"].map((emoji) => <button key={emoji} onClick={() => void sendEmoji(emoji)}>{emoji}</button>)}</div>}
@@ -373,6 +396,38 @@ function ClassroomControls({ sendStatus, sendInteraction }: {
 function StudentVideoError() {
   const rtc = useRTC();
   return rtc.error ? <div className="rtc-error">⚠ {rtc.error}</div> : null;
+}
+
+function StudentParticipantsPanel({ room, currentUserId }: { room: Classroom; currentUserId: string }) {
+  const participants = [
+    { id: room.teacherId, name: room.teacher?.name ?? "老师", role: "老师", self: false },
+    ...room.students.map(({ student }) => ({
+      id: student.id,
+      name: student.name,
+      role: student.id === currentUserId ? "我" : "同学",
+      self: student.id === currentUserId
+    }))
+  ];
+  return (
+    <aside className="student-video-panel">
+      <div className="student-video-panel-head"><b>课堂成员</b><small>{participants.length} 人</small></div>
+      <div className="student-video-grid">
+        {participants.map((participant) => (
+          <div className="student-video-member" key={participant.id}>
+            <VideoTile
+              label={`${participant.name}${participant.self ? "（我）" : ""}`}
+              source={participant.self ? "local" : "remote"}
+              peerId={participant.self ? undefined : participant.id}
+              childFriendly
+              muted={participant.self}
+            />
+            <div><b>{participant.name}</b><small>{participant.role}</small></div>
+          </div>
+        ))}
+      </div>
+      <p>可拖动右下角调节视频区大小</p>
+    </aside>
+  );
 }
 
 function StudentClassroom({ roomId }: { roomId: string }) {
@@ -406,19 +461,18 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     visibility: document.visibilityState,
     last_active_at: Date.now()
   }));
-  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload) => {
+  const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload, targetUid?: string) => {
     const socket = socketRef.current;
-    const teacherId = room?.teacherId;
-    if (!socket || !teacherId) return;
+    if (!socket || !targetUid) return;
     void sendSignal(socket, createSignal({
       msg_type: "RTC_SIGNAL",
       action,
       room_id: roomId,
       from_uid: user.id,
-      target_uid: teacherId,
+      target_uid: targetUid,
       payload
     }));
-  }, [room?.teacherId, roomId, user.id]);
+  }, [roomId, user.id]);
   const sendInteraction = useCallback(async (action: StudentInteractionAction, payload: StudentInteractionPayload) => {
     const socket = socketRef.current;
     const teacherId = room?.teacherId;
@@ -519,10 +573,16 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   };
 
   if (!room) return <div className="kid-loading"><span>⭐</span>正在飞往课堂…</div>;
+  const rtcPeerIds = [
+    room.teacherId,
+    ...room.students.map(({ student }) => student.id)
+  ].filter((id) => id && id !== user.id);
   return (
     <RTCProvider
+      selfId={user.id}
+      teacherId={room.teacherId}
       initiator={false}
-      peerIds={room.teacherId ? [room.teacherId] : []}
+      peerIds={rtcPeerIds}
       incoming={incoming?.msg_type === "RTC_SIGNAL" ? incoming as SignalMessage<RTCSignalPayload> : null}
       sendRTC={sendRTC}
     >
@@ -530,8 +590,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">认真听讲的你最闪亮 ✨</span><LanguageSwitcher language={language} onChange={setLanguage} className="class-language" /></header>
         <main className="student-class-layout">
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
-          <div className="teacher-pip"><VideoTile label={`${room.teacher?.name ?? "老师"}正在陪伴你`} childFriendly /><div className="pip-live">● 老师在线</div></div>
-          <div className="student-self-pip"><VideoTile label="我的画面" source="local" muted /></div>
+          <StudentParticipantsPanel room={room} currentUserId={user.id} />
           <StudentPomodoroPanel pomodoro={pomodoro} remainingSeconds={pomodoroRemaining} finishedEarly={pomodoroFinishedEarly} onFinishEarly={() => void finishPomodoroEarly()} />
           <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} />
           <StudentVideoError />
