@@ -1,18 +1,18 @@
 import { Router } from "express";
 import { prisma } from "../database/client.js";
 import { requireAuth, type AuthRequest } from "../auth/security.js";
+import { rewardLogWhereForAuth, signalLogWhereForAuth } from "../auth/scopes.js";
 
 export const logsRouter = Router();
 logsRouter.use(requireAuth(["admin", "teacher"]));
 
 logsRouter.get("/signals", async (request: AuthRequest, response) => {
-  const roomWhere = request.auth!.role === "teacher" ? { room: { teacherId: request.auth!.id } } : {};
   response.json(await prisma.signalLog.findMany({
-    where: roomWhere,
+    where: signalLogWhereForAuth(request.auth!),
     include: {
       fromUser: { select: { name: true } },
       targetUser: { select: { name: true } },
-      room: { select: { title: true } }
+      room: { select: { id: true, title: true, teacherId: true } }
     },
     orderBy: { createdAt: "desc" },
     take: 200
@@ -21,11 +21,11 @@ logsRouter.get("/signals", async (request: AuthRequest, response) => {
 
 logsRouter.get("/rewards", async (request: AuthRequest, response) => {
   response.json(await prisma.rewardLog.findMany({
-    where: request.auth!.role === "teacher" ? { teacherId: request.auth!.id } : undefined,
+    where: rewardLogWhereForAuth(request.auth!),
     include: {
-      teacher: { select: { name: true } },
-      student: { select: { name: true } },
-      room: { select: { title: true } }
+      teacher: { select: { id: true, name: true } },
+      student: { select: { id: true, name: true } },
+      room: { select: { id: true, title: true, teacherId: true } }
     },
     orderBy: { createdAt: "desc" },
     take: 200

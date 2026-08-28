@@ -26,17 +26,31 @@ interface TeacherGroup {
   description?: string;
   students?: Array<{ user: Pick<User, "id" | "name" | "email"> }>;
 }
+interface TeacherStudent extends User {
+  studentProfile?: {
+    groupId?: string | null;
+    group?: { id: string; teacherId: string } | null;
+    groupMemberships?: Array<{ group: { id: string; teacherId: string } }>;
+  };
+}
 interface TeacherReward {
   id: string;
+  teacherId?: string;
   rewardType: string;
   message?: string;
   createdAt: string;
-  student: { name: string };
-  room: { title: string };
+  teacher?: { id?: string; name: string };
+  student: { id?: string; name: string };
+  room: { title: string; teacherId?: string };
 }
 
 const rewardIcon = (type: string) => type === "red_flower" ? "🌸" : type === "trophy" ? "🏆" : type === "confetti" ? "🎉" : type === "task_praise" ? "👏" : "⭐";
 const rewardLabel = (type: string) => type === "red_flower" ? "小红花" : type === "trophy" ? "奖杯" : type === "confetti" ? "彩带" : type === "task_praise" ? "任务表扬" : "星星雨";
+const studentBelongsToTeacher = (student: TeacherStudent, teacherId: string) =>
+  student.studentProfile?.group?.teacherId === teacherId
+  || (student.studentProfile?.groupMemberships ?? []).some(({ group }) => group.teacherId === teacherId);
+const rewardBelongsToTeacher = (reward: TeacherReward, teacherId: string) =>
+  reward.teacherId === teacherId || reward.teacher?.id === teacherId || reward.room.teacherId === teacherId;
 const clampNumber = (value: number, min: number, max: number) => Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
 const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
 const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
@@ -155,7 +169,7 @@ function Shell({ children, active, onNavigate }: { children: React.ReactNode; ac
 
 function Dashboard() {
   const { language } = useLanguageState();
-  const [students, setStudents] = useState<User[]>([]);
+  const [students, setStudents] = useState<TeacherStudent[]>([]);
   const [rooms, setRooms] = useState<Classroom[]>([]);
   const [groups, setGroups] = useState<TeacherGroup[]>([]);
   const [rewards, setRewards] = useState<TeacherReward[]>([]);
@@ -175,18 +189,31 @@ function Dashboard() {
   const [savingReportId, setSavingReportId] = useState("");
   const load = async () => {
     try {
-      const [studentData, roomData, groupData, rewardData, taskData] = await Promise.all([
-        api<User[]>("/api/users?role=student"),
+      const [currentTeacher, studentData, roomData, groupData, rewardData, taskData] = await Promise.all([
+        api<User>("/api/users/me"),
+        api<TeacherStudent[]>("/api/users?role=student"),
         api<Classroom[]>("/api/rooms"),
         api<TeacherGroup[]>("/api/groups"),
         api<TeacherReward[]>("/api/logs/rewards"),
         api<LearningTask[]>("/api/tasks")
       ]);
-      setStudents(studentData);
-      setRooms(roomData);
-      setGroups(groupData);
-      setRewards(rewardData);
-      setTasks(taskData);
+      if (currentTeacher.role !== "teacher" || currentTeacher.id !== session.user?.id) {
+        session.clear();
+        location.href = appUrl();
+        return;
+      }
+      const scopedStudents = studentData.filter((student) => studentBelongsToTeacher(student, currentTeacher.id));
+      const scopedStudentIds = new Set(scopedStudents.map(({ id }) => id));
+      setStudents(scopedStudents);
+      setRooms(roomData.filter((room) => room.teacherId === currentTeacher.id));
+      setGroups(groupData
+        .filter((group) => group.teacherId === currentTeacher.id)
+        .map((group) => ({
+          ...group,
+          students: group.students?.filter(({ user }) => scopedStudentIds.has(user.id))
+        })));
+      setRewards(rewardData.filter((reward) => rewardBelongsToTeacher(reward, currentTeacher.id)));
+      setTasks(taskData.filter((task) => task.teacherId === currentTeacher.id && scopedStudentIds.has(task.studentId)));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "加载失败");
     }
@@ -552,13 +579,20 @@ function ClassroomPage({ roomId }: { roomId: string }) {
 
   useEffect(() => {
     void Promise.all([
+      api<User>("/api/users/me"),
       api<Classroom>(`/api/rooms/${roomId}`),
       api<Courseware[]>("/api/courseware"),
       api<LearningTask[]>("/api/tasks")
-    ]).then(([roomData, coursewareData, taskData]) => {
+    ]).then(([currentTeacher, roomData, coursewareData, taskData]) => {
+      if (currentTeacher.role !== "teacher" || currentTeacher.id !== session.user?.id || roomData.teacherId !== currentTeacher.id) {
+        session.clear();
+        location.href = appUrl();
+        return;
+      }
+      const classroomStudentIds = new Set(roomData.students.map(({ student }) => student.id));
       setRoom(roomData);
       setCourseware(coursewareData);
-      setTasks(taskData);
+      setTasks(taskData.filter((task) => task.teacherId === currentTeacher.id && classroomStudentIds.has(task.studentId)));
       setPomodoro(pomodoroFromRoom(roomData));
       setPage(roomData.currentPage ?? 1);
       setSelectedCourseware(

@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { prisma } from "../database/client.js";
 import { requireAuth, type AuthRequest } from "../auth/security.js";
+import { studentGroupWhereForAuth } from "../auth/scopes.js";
 
 export const groupsRouter = Router();
 groupsRouter.use(requireAuth(["admin", "teacher"]));
 
 groupsRouter.get("/", async (request: AuthRequest, response) => {
   const groups = await prisma.studentGroup.findMany({
-    where: request.auth!.role === "teacher" ? { teacherId: request.auth!.id } : undefined,
+    where: studentGroupWhereForAuth(request.auth!),
     include: {
       teacher: { select: { id: true, name: true } },
       students: { include: { user: { select: { id: true, name: true, email: true } } } },

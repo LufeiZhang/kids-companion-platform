@@ -1,17 +1,11 @@
 import { Router } from "express";
 import { prisma } from "../database/client.js";
 import { hashPassword, requireAuth, type AuthRequest } from "../auth/security.js";
+import { usersWhereForAuth } from "../auth/scopes.js";
 import type { UserRole } from "@companion/types";
 
 export const usersRouter = Router();
 usersRouter.use(requireAuth());
-
-const studentAccessForTeacher = (teacherId: string) => ({
-  OR: [
-    { group: { teacherId } },
-    { groupMemberships: { some: { group: { teacherId } } } }
-  ]
-});
 
 usersRouter.get("/me", async (request: AuthRequest, response) => {
   const user = await prisma.user.findUnique({ where: { id: request.auth!.id } });
@@ -22,12 +16,7 @@ usersRouter.get("/me", async (request: AuthRequest, response) => {
 usersRouter.get("/", async (request: AuthRequest, response) => {
   const role = request.query.role as UserRole | undefined;
   if (request.auth!.role === "student") return response.status(403).json({ message: "无权查看用户列表" });
-  const where = request.auth!.role === "teacher"
-    ? {
-        role: "student" as const,
-        studentProfile: studentAccessForTeacher(request.auth!.id)
-      }
-    : role ? { role } : undefined;
+  const where = usersWhereForAuth(request.auth!, role);
   const users = await prisma.user.findMany({
     where,
     select: {

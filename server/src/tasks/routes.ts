@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../database/client.js";
 import { requireAuth, type AuthRequest } from "../auth/security.js";
+import { learningTaskWhereForAuth, studentUserWhereForTeacher } from "../auth/scopes.js";
 
 export const tasksRouter = Router();
 tasksRouter.use(requireAuth());
@@ -10,22 +11,9 @@ const taskInclude = {
   student: { select: { id: true, name: true, email: true } }
 } as const;
 
-const studentAccessForTeacher = (teacherId: string) => ({
-  OR: [
-    { group: { teacherId } },
-    { groupMemberships: { some: { group: { teacherId } } } }
-  ]
-});
-
 tasksRouter.get("/", async (request: AuthRequest, response) => {
-  const auth = request.auth!;
-  const where = auth.role === "teacher"
-    ? { teacherId: auth.id }
-    : auth.role === "student"
-      ? { studentId: auth.id }
-      : {};
   const tasks = await prisma.learningTask.findMany({
-    where,
+    where: learningTaskWhereForAuth(request.auth!),
     include: taskInclude,
     orderBy: [{ status: "asc" }, { createdAt: "desc" }]
   });
@@ -45,8 +33,7 @@ tasksRouter.post("/", requireAuth(["teacher"]), async (request: AuthRequest, res
   const allowedStudent = await prisma.user.findFirst({
     where: {
       id: studentId,
-      role: "student",
-      studentProfile: studentAccessForTeacher(request.auth!.id)
+      ...studentUserWhereForTeacher(request.auth!.id)
     },
     select: { id: true }
   });
@@ -80,7 +67,7 @@ tasksRouter.patch("/:id/status", requireAuth(["teacher"]), async (request: AuthR
     return response.status(400).json({ message: "任务状态不合法" });
   }
   const existing = await prisma.learningTask.findFirst({
-    where: { id: String(request.params.id), teacherId: request.auth!.id },
+    where: learningTaskWhereForAuth(request.auth!, { id: String(request.params.id) }),
     select: { id: true }
   });
   if (!existing) return response.status(404).json({ message: "任务不存在或无权操作" });
