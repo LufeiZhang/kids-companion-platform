@@ -223,6 +223,7 @@ export interface RTCSignalPayload {
   description?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
   negotiationId?: string;
+  reset?: boolean;
 }
 
 export interface StudentInteractionPayload {

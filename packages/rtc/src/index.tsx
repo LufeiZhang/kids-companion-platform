@@ -35,6 +35,7 @@ interface PeerBundle {
   pendingCandidates: PendingCandidate[];
   activeNegotiationId?: string;
   localOfferCreatedAt?: number;
+  makingOffer?: boolean;
 }
 
 interface RTCContextValue {
@@ -241,7 +242,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   const [connectionStates, setConnectionStates] = useState<Record<string, RTCPeerConnectionState | "idle">>({});
   const [error, setError] = useState("");
   const [virtualBackgroundUrl, setVirtualBackgroundUrl] = useState<string | null>(null);
-  const createOfferRef = useRef<(peerId: string, force?: boolean) => Promise<void>>(async () => undefined);
+  const createOfferRef = useRef<(peerId: string, force?: boolean, reset?: boolean) => Promise<void>>(async () => undefined);
 
   useEffect(() => { sendRef.current = sendRTC; }, [sendRTC]);
   useEffect(() => { selfIdRef.current = selfId; }, [selfId]);
@@ -291,7 +292,6 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     bundle.peer.ontrack = null;
     bundle.peer.onconnectionstatechange = null;
     bundle.peer.oniceconnectionstatechange = null;
-    bundle.peer.onnegotiationneeded = null;
     bundle.peer.close();
     peersRef.current.delete(peerId);
     setRemoteStreams((current) => {
@@ -339,10 +339,6 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId, true);
       }
     };
-    peer.onnegotiationneeded = () => {
-      if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId, true);
-      else sendToPeer(peerId, "RTC_READY", { negotiationId: createNegotiationId() });
-    };
     return bundle;
   }, [sendToPeer, shouldCreateOffer]);
 
@@ -364,10 +360,12 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     for (const candidate of candidates) await addRemoteCandidate(bundle, candidate);
   }, [addRemoteCandidate]);
 
-  const createOffer = useCallback(async (peerId: string, force = false) => {
+  const createOffer = useCallback(async (peerId: string, force = false, reset = false) => {
+    let bundle = ensurePeer(peerId);
+    if (bundle.makingOffer) return;
+    bundle.makingOffer = true;
     try {
-      const bundle = ensurePeer(peerId);
-      const { peer } = bundle;
+      let peer = bundle.peer;
       if (peer.signalingState !== "stable") {
         const staleOffer = peer.signalingState === "have-local-offer"
           && Date.now() - (bundle.localOfferCreatedAt ?? 0) > 1500;
@@ -381,13 +379,34 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       const negotiationId = createNegotiationId();
       bundle.activeNegotiationId = negotiationId;
       const offer = await peer.createOffer({ iceRestart: force });
-      await peer.setLocalDescription(offer);
+      try {
+        await peer.setLocalDescription(offer);
+      } catch (reason) {
+        if (!isMLineOrderError(reason)) throw reason;
+        disposePeer(peerId);
+        bundle = ensurePeer(peerId);
+        peer = bundle.peer;
+        bundle.makingOffer = true;
+        await attachLocalTracks(peer);
+        const retryNegotiationId = createNegotiationId();
+        bundle.activeNegotiationId = retryNegotiationId;
+        const retryOffer = await peer.createOffer({ iceRestart: true });
+        await peer.setLocalDescription(retryOffer);
+        bundle.localOfferCreatedAt = Date.now();
+        sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? retryOffer, negotiationId: retryNegotiationId, reset: true });
+        setError("");
+        return;
+      }
       bundle.localOfferCreatedAt = Date.now();
-      sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? offer, negotiationId });
+      sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? offer, negotiationId, reset });
+      setError("");
     } catch (reason) {
       setError(rtcConnectionMessage(reason));
+    } finally {
+      const latest = peersRef.current.get(peerId);
+      if (latest) latest.makingOffer = false;
     }
-  }, [attachLocalTracks, ensurePeer, sendToPeer]);
+  }, [attachLocalTracks, disposePeer, ensurePeer, sendToPeer]);
 
   useEffect(() => { createOfferRef.current = createOffer; }, [createOffer]);
 
@@ -400,8 +419,8 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       if (options.recreate) disposePeer(peerId);
       const { peer } = ensurePeer(peerId);
       await attachLocalTracks(peer);
-      if (shouldCreateOffer(peerId)) await createOffer(peerId, Boolean(options.force));
-      else sendToPeer(peerId, "RTC_READY", { negotiationId: createNegotiationId() });
+      if (shouldCreateOffer(peerId)) await createOffer(peerId, Boolean(options.force), Boolean(options.recreate));
+      else sendToPeer(peerId, "RTC_READY", { negotiationId: createNegotiationId(), reset: Boolean(options.recreate) });
     }
   }, [allPeerIds, attachLocalTracks, createOffer, disposePeer, ensurePeer, sendToPeer, shouldCreateOffer]);
 
@@ -441,13 +460,14 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       try {
         const peerId = message.from_uid;
         if (message.action === "RTC_READY") {
-          if (shouldCreateOffer(peerId)) disposePeer(peerId);
+          if (shouldCreateOffer(peerId) && message.payload.reset) disposePeer(peerId);
           const bundle = ensurePeer(peerId);
           await attachLocalTracks(bundle.peer);
-          if (shouldCreateOffer(peerId)) await createOffer(peerId, true);
+          if (shouldCreateOffer(peerId)) await createOffer(peerId, true, Boolean(message.payload.reset));
           return;
         }
         if (message.action === "RTC_OFFER" && message.payload.description) {
+          if (message.payload.reset) disposePeer(peerId);
           let bundle = ensurePeer(peerId);
           let peer = bundle.peer;
           const negotiationId = message.payload.negotiationId ?? createNegotiationId();
@@ -470,8 +490,21 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
             await peer.setRemoteDescription(message.payload.description);
           }
           await flushCandidates(bundle);
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
+          let answer = await peer.createAnswer();
+          try {
+            await peer.setLocalDescription(answer);
+          } catch (reason) {
+            if (!isMLineOrderError(reason)) throw reason;
+            disposePeer(peerId);
+            bundle = ensurePeer(peerId);
+            peer = bundle.peer;
+            bundle.activeNegotiationId = negotiationId;
+            await attachLocalTracks(peer);
+            await peer.setRemoteDescription(message.payload.description);
+            await flushCandidates(bundle);
+            answer = await peer.createAnswer();
+            await peer.setLocalDescription(answer);
+          }
           sendToPeer(peerId, "RTC_ANSWER", { description: peer.localDescription ?? answer, negotiationId });
           setError("");
         }
