@@ -490,6 +490,21 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     if (!ack.ok) setFocusMessage(ack.error ?? "互动发送失败，请稍后再试");
     return ack.ok;
   }, [room?.teacherId, roomId, user.id]);
+  const refreshRoomRoster = useCallback(() => {
+    void api<Classroom>(`/api/rooms/${roomId}`).then((data) => {
+      setRoom((current) => current
+        ? {
+            ...current,
+            status: data.status,
+            students: data.students,
+            teacher: data.teacher,
+            startedAt: data.startedAt,
+            endedAt: data.endedAt
+          }
+        : data);
+      if (data.status === "ended") setEnded(true);
+    }).catch(() => undefined);
+  }, [roomId]);
 
   useEffect(() => {
     void api<Classroom>(`/api/rooms/${roomId}`).then((data) => {
@@ -541,7 +556,10 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       }
       if (signal.msg_type === "ROOM_EVENT") {
         if (signal.action === "ROOM_ENDED") setEnded(true);
-        if (signal.action === "JOIN_ROOM" || signal.action === "USER_ONLINE") setRtcReadyKey((value) => value + 1);
+        if (signal.action === "JOIN_ROOM" || signal.action === "USER_ONLINE") {
+          refreshRoomRoster();
+          setRtcReadyKey((value) => value + 1);
+        }
       }
     });
     const visibility = () => sendStatus(document.hidden ? "PAGE_HIDDEN" : "PAGE_VISIBLE");
@@ -563,15 +581,17 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         idleSent = true;
       }
     }, 30000);
+    const rosterTimer = window.setInterval(refreshRoomRoster, 8000);
     ["pointerdown", "keydown", "touchstart"].forEach((eventName) => window.addEventListener(eventName, markActive));
     return () => {
       document.removeEventListener("visibilitychange", visibility);
       window.removeEventListener("beforeunload", beforeUnload);
       clearInterval(idleTimer);
+      window.clearInterval(rosterTimer);
       ["pointerdown", "keydown", "touchstart"].forEach((eventName) => window.removeEventListener(eventName, markActive));
       socket.disconnect();
     };
-  }, [roomId]);
+  }, [refreshRoomRoster, roomId]);
 
   const finishPomodoroEarly = async () => {
     if (pomodoroFinishedEarly) return;

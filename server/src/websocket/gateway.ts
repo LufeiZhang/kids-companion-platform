@@ -190,6 +190,23 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
               payload: activePomodoro
             } satisfies SignalMessage<PomodoroPayload>);
           }
+          const onlineParticipantIds = new Set<string>();
+          for (const client of await io.in(message.room_id).fetchSockets()) {
+            const uid = client.data.user?.id;
+            if (uid && uid !== socket.data.user.id) onlineParticipantIds.add(uid);
+          }
+          for (const uid of onlineParticipantIds) {
+            socket.emit("signal", {
+              msg_id: crypto.randomUUID(),
+              msg_type: "ROOM_EVENT",
+              action: "USER_ONLINE",
+              room_id: message.room_id,
+              from_uid: uid,
+              target_uid: socket.data.user.id,
+              timestamp: Date.now(),
+              payload: { server_generated: true }
+            } satisfies SignalMessage);
+          }
         }
 
         if (message.msg_type === "WHITEBOARD_EVENT") {

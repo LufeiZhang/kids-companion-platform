@@ -604,6 +604,20 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     if (!ack.ok) setNotice(ack.error ?? "操作未送达");
     return ack.ok;
   };
+  const refreshRoomRoster = useCallback(() => {
+    void api<Classroom>(`/api/rooms/${roomId}`).then((roomData) => {
+      setRoom((current) => current
+        ? {
+            ...current,
+            status: roomData.status,
+            students: roomData.students,
+            teacher: roomData.teacher,
+            startedAt: roomData.startedAt,
+            endedAt: roomData.endedAt
+          }
+        : roomData);
+    }).catch(() => undefined);
+  }, [roomId]);
 
   useEffect(() => {
     void Promise.all([
@@ -655,7 +669,10 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           ...current,
           [message.from_uid]: message.action === "USER_OFFLINE" ? "offline" : "online"
         }));
-        if (message.action === "JOIN_ROOM" || message.action === "USER_ONLINE") setRtcReadyKey((value) => value + 1);
+        if (message.action === "JOIN_ROOM" || message.action === "USER_ONLINE") {
+          refreshRoomRoster();
+          setRtcReadyKey((value) => value + 1);
+        }
       }
       if (message.msg_type === "STUDENT_INTERACTION") {
         const payload = message.payload as unknown as StudentInteractionPayload;
@@ -680,8 +697,12 @@ function ClassroomPage({ roomId }: { roomId: string }) {
         setPomodoro(message.payload as unknown as PomodoroPayload);
       }
     });
-    return () => { socket.disconnect(); };
-  }, [roomId]);
+    const rosterTimer = window.setInterval(refreshRoomRoster, 8000);
+    return () => {
+      window.clearInterval(rosterTimer);
+      socket.disconnect();
+    };
+  }, [refreshRoomRoster, roomId]);
 
   const whiteboardEvent = (action: WhiteboardAction, payload: DrawPayload | { page: number }) => {
     void emit(makeSignal("WHITEBOARD_EVENT", action, payload));
@@ -862,7 +883,11 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           </section>
           <aside className="classroom-aside">
             <div className="aside-block">
-              <div className="aside-heading"><b>学生状态</b><span>{classroomStudents.length} 人</span></div>
+              <div className="aside-heading"><b>课堂成员视频</b><span>{classroomStudents.length + 1} 人</span></div>
+              <div className="teacher-video-card">
+                <VideoTile label={`${user.name}（我）`} source="local" muted />
+                <div className="student-state"><b>{user.name}</b><div><span className="target-badge">老师</span><span className="state online">● 在线授课</span></div></div>
+              </div>
               <div className="student-video-list">
                 {classroomStudents.map((student) => (
                   <TeacherVideoPanel

@@ -32,6 +32,7 @@ interface PeerBundle {
   peer: RTCPeerConnection;
   remote: MediaStream;
   pendingCandidates: RTCIceCandidateInit[];
+  localOfferCreatedAt?: number;
 }
 
 interface RTCContextValue {
@@ -223,7 +224,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   const [connectionStates, setConnectionStates] = useState<Record<string, RTCPeerConnectionState | "idle">>({});
   const [error, setError] = useState("");
   const [virtualBackgroundUrl, setVirtualBackgroundUrl] = useState<string | null>(null);
-  const createOfferRef = useRef<(peerId: string) => Promise<void>>(async () => undefined);
+  const createOfferRef = useRef<(peerId: string, force?: boolean) => Promise<void>>(async () => undefined);
 
   useEffect(() => { sendRef.current = sendRTC; }, [sendRTC]);
   useEffect(() => { selfIdRef.current = selfId; }, [selfId]);
@@ -294,7 +295,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     peer.oniceconnectionstatechange = () => {
       if (peer.iceConnectionState === "failed") {
         peer.restartIce();
-        if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId);
+        if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId, true);
       }
     };
     return bundle;
@@ -307,13 +308,23 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     for (const candidate of candidates) await peer.addIceCandidate(candidate);
   }, []);
 
-  const createOffer = useCallback(async (peerId: string) => {
+  const createOffer = useCallback(async (peerId: string, force = false) => {
     try {
-      const { peer } = ensurePeer(peerId);
-      if (peer.signalingState !== "stable") return;
+      const bundle = ensurePeer(peerId);
+      const { peer } = bundle;
+      if (peer.signalingState !== "stable") {
+        const staleOffer = peer.signalingState === "have-local-offer"
+          && Date.now() - (bundle.localOfferCreatedAt ?? 0) > 1500;
+        if (force || staleOffer) {
+          await peer.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit).catch(() => undefined);
+          bundle.localOfferCreatedAt = undefined;
+        }
+        if ((peer.signalingState as RTCSignalingState) !== "stable") return;
+      }
       await attachLocalTracks(peer);
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
+      bundle.localOfferCreatedAt = Date.now();
       sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? offer });
     } catch (reason) {
       setError(permissionMessage(reason));
@@ -370,12 +381,16 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         if (message.action === "RTC_READY") {
           const bundle = ensurePeer(peerId);
           await attachLocalTracks(bundle.peer);
-          if (shouldCreateOffer(peerId)) await createOffer(peerId);
+          if (shouldCreateOffer(peerId)) await createOffer(peerId, true);
           return;
         }
         const bundle = ensurePeer(peerId);
         const peer = bundle.peer;
         if (message.action === "RTC_OFFER" && message.payload.description) {
+          if (peer.signalingState !== "stable") {
+            await peer.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit).catch(() => undefined);
+            bundle.localOfferCreatedAt = undefined;
+          }
           await attachLocalTracks(peer);
           await peer.setRemoteDescription(message.payload.description);
           await flushCandidates(bundle);
@@ -386,6 +401,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         if (message.action === "RTC_ANSWER" && message.payload.description) {
           if (peer.signalingState !== "have-local-offer") return;
           await peer.setRemoteDescription(message.payload.description);
+          bundle.localOfferCreatedAt = undefined;
           await flushCandidates(bundle);
         }
         if (message.action === "ICE_CANDIDATE" && message.payload.candidate) {
