@@ -291,6 +291,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     bundle.peer.ontrack = null;
     bundle.peer.onconnectionstatechange = null;
     bundle.peer.oniceconnectionstatechange = null;
+    bundle.peer.onnegotiationneeded = null;
     bundle.peer.close();
     peersRef.current.delete(peerId);
     setRemoteStreams((current) => {
@@ -337,6 +338,10 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         peer.restartIce();
         if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId, true);
       }
+    };
+    peer.onnegotiationneeded = () => {
+      if (shouldCreateOffer(peerId)) void createOfferRef.current(peerId, true);
+      else sendToPeer(peerId, "RTC_READY", { negotiationId: createNegotiationId() });
     };
     return bundle;
   }, [sendToPeer, shouldCreateOffer]);
@@ -386,15 +391,19 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
 
   useEffect(() => { createOfferRef.current = createOffer; }, [createOffer]);
 
-  const renegotiatePeers = useCallback(async (ids = allPeerIds()) => {
-    const uniqueIds = [...new Set(ids.filter((uid) => uid && uid !== selfIdRef.current))];
+  const renegotiatePeers = useCallback(async (
+    ids?: string[],
+    options: { force?: boolean; recreate?: boolean } = {}
+  ) => {
+    const uniqueIds = [...new Set((ids ?? allPeerIds()).filter((uid) => uid && uid !== selfIdRef.current))];
     for (const peerId of uniqueIds) {
+      if (options.recreate) disposePeer(peerId);
       const { peer } = ensurePeer(peerId);
       await attachLocalTracks(peer);
-      if (shouldCreateOffer(peerId)) await createOffer(peerId);
-      else sendToPeer(peerId, "RTC_READY", {});
+      if (shouldCreateOffer(peerId)) await createOffer(peerId, Boolean(options.force));
+      else sendToPeer(peerId, "RTC_READY", { negotiationId: createNegotiationId() });
     }
-  }, [allPeerIds, attachLocalTracks, createOffer, ensurePeer, sendToPeer, shouldCreateOffer]);
+  }, [allPeerIds, attachLocalTracks, createOffer, disposePeer, ensurePeer, sendToPeer, shouldCreateOffer]);
 
   const peerIdsKey = useMemo(() => peerIds.filter(Boolean).sort().join("|"), [peerIds]);
   useEffect(() => {
@@ -414,7 +423,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         return rest;
       });
     }
-    void renegotiatePeers(nextPeerIds);
+    void renegotiatePeers(nextPeerIds, { force: Boolean(readyKey) });
   }, [peerIdsKey, readyKey, renegotiatePeers]);
 
   useEffect(() => {
@@ -432,6 +441,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       try {
         const peerId = message.from_uid;
         if (message.action === "RTC_READY") {
+          if (shouldCreateOffer(peerId)) disposePeer(peerId);
           const bundle = ensurePeer(peerId);
           await attachLocalTracks(bundle.peer);
           if (shouldCreateOffer(peerId)) await createOffer(peerId, true);
@@ -507,7 +517,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         const state = peersRef.current.get(peerId)?.peer.connectionState ?? "new";
         return state !== "connected";
       });
-      if (retryIds.length) void renegotiatePeers(retryIds);
+      if (retryIds.length) void renegotiatePeers(retryIds, { force: true });
     }, 6000);
     return () => window.clearInterval(timer);
   }, [allPeerIds, renegotiatePeers]);
@@ -525,7 +535,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     if (track) localRef.current.addTrack(track);
     outboundVideoTrackRef.current = track;
     setLocalStream(new MediaStream(localRef.current.getTracks()));
-    await renegotiatePeers();
+    await renegotiatePeers(undefined, { force: true, recreate: true });
   }, [renegotiatePeers]);
 
   const rebuildVideoOutput = useCallback(async (rawTrack = rawVideoTrackRef.current) => {
@@ -579,7 +589,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       localRef.current.addTrack(track);
       setLocalStream(new MediaStream(localRef.current.getTracks()));
       setMicOn(true);
-      await renegotiatePeers();
+      await renegotiatePeers(undefined, { force: true, recreate: true });
       track.onended = () => {
         setMicOn(false);
       };
@@ -599,7 +609,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     outputTrack.enabled = enabled;
     setCameraOn(enabled);
     setLocalStream(new MediaStream(localRef.current.getTracks()));
-    await renegotiatePeers();
+    await renegotiatePeers(undefined, { force: true });
     return enabled;
   }, [addTrack, renegotiatePeers]);
 
@@ -608,7 +618,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     if (!track || track.readyState === "ended") return addTrack("audio");
     track.enabled = !track.enabled;
     setMicOn(track.enabled);
-    await renegotiatePeers();
+    await renegotiatePeers(undefined, { force: true });
     return track.enabled;
   }, [addTrack, renegotiatePeers]);
 
