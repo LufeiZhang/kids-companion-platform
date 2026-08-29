@@ -86,6 +86,11 @@ function createNegotiationId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function isMLineOrderError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /order of m-lines|m-line/i.test(message);
+}
+
 function loadImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -279,6 +284,25 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     }
   }, []);
 
+  const disposePeer = useCallback((peerId: string) => {
+    const bundle = peersRef.current.get(peerId);
+    if (!bundle) return;
+    bundle.peer.onicecandidate = null;
+    bundle.peer.ontrack = null;
+    bundle.peer.onconnectionstatechange = null;
+    bundle.peer.oniceconnectionstatechange = null;
+    bundle.peer.close();
+    peersRef.current.delete(peerId);
+    setRemoteStreams((current) => {
+      const { [peerId]: _removed, ...rest } = current;
+      return rest;
+    });
+    setConnectionStates((current) => {
+      const { [peerId]: _removed, ...rest } = current;
+      return rest;
+    });
+  }, []);
+
   const ensurePeer = useCallback((peerId: string) => {
     const existing = peersRef.current.get(peerId);
     if (existing) return existing;
@@ -306,6 +330,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     };
     peer.onconnectionstatechange = () => {
       setConnectionStates((current) => ({ ...current, [peerId]: peer.connectionState }));
+      if (peer.connectionState === "connected") setError("");
     };
     peer.oniceconnectionstatechange = () => {
       if (peer.iceConnectionState === "failed") {
@@ -412,9 +437,9 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
           if (shouldCreateOffer(peerId)) await createOffer(peerId, true);
           return;
         }
-        const bundle = ensurePeer(peerId);
-        const peer = bundle.peer;
         if (message.action === "RTC_OFFER" && message.payload.description) {
+          let bundle = ensurePeer(peerId);
+          let peer = bundle.peer;
           const negotiationId = message.payload.negotiationId ?? createNegotiationId();
           if (peer.signalingState !== "stable") {
             await peer.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit).catch(() => undefined);
@@ -423,21 +448,44 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
           bundle.activeNegotiationId = negotiationId;
           bundle.pendingCandidates = bundle.pendingCandidates.filter((item) => !item.negotiationId || item.negotiationId === negotiationId);
           await attachLocalTracks(peer);
-          await peer.setRemoteDescription(message.payload.description);
+          try {
+            await peer.setRemoteDescription(message.payload.description);
+          } catch (reason) {
+            if (!isMLineOrderError(reason)) throw reason;
+            disposePeer(peerId);
+            bundle = ensurePeer(peerId);
+            peer = bundle.peer;
+            bundle.activeNegotiationId = negotiationId;
+            await attachLocalTracks(peer);
+            await peer.setRemoteDescription(message.payload.description);
+          }
           await flushCandidates(bundle);
           const answer = await peer.createAnswer();
           await peer.setLocalDescription(answer);
           sendToPeer(peerId, "RTC_ANSWER", { description: peer.localDescription ?? answer, negotiationId });
+          setError("");
         }
         if (message.action === "RTC_ANSWER" && message.payload.description) {
+          const bundle = ensurePeer(peerId);
+          const peer = bundle.peer;
           if (peer.signalingState !== "have-local-offer") return;
           if (message.payload.negotiationId && bundle.activeNegotiationId && message.payload.negotiationId !== bundle.activeNegotiationId) return;
-          await peer.setRemoteDescription(message.payload.description);
+          try {
+            await peer.setRemoteDescription(message.payload.description);
+          } catch (reason) {
+            if (!isMLineOrderError(reason)) throw reason;
+            disposePeer(peerId);
+            if (shouldCreateOffer(peerId)) await createOffer(peerId, true);
+            return;
+          }
           if (message.payload.negotiationId) bundle.activeNegotiationId = message.payload.negotiationId;
           bundle.localOfferCreatedAt = undefined;
           await flushCandidates(bundle);
+          setError("");
         }
         if (message.action === "ICE_CANDIDATE" && message.payload.candidate) {
+          const bundle = ensurePeer(peerId);
+          const peer = bundle.peer;
           const item = { candidate: message.payload.candidate, negotiationId: message.payload.negotiationId };
           if (item.negotiationId && bundle.activeNegotiationId && item.negotiationId !== bundle.activeNegotiationId) return;
           if (peer.remoteDescription) await addRemoteCandidate(bundle, item);
@@ -451,7 +499,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
       for (const message of unhandled) await handle(message);
     };
     void run();
-  }, [addRemoteCandidate, attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
+  }, [addRemoteCandidate, attachLocalTracks, createOffer, disposePeer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
