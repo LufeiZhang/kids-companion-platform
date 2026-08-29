@@ -316,18 +316,23 @@ function ClassroomPraiseOverlay({ praise, onDone }: { praise: ClassroomPraisePay
   );
 }
 
-function StudentPomodoroPanel({ pomodoro, remainingSeconds, finishedEarly, onFinishEarly }: {
+function StudentPomodoroPanel({ pomodoro, remainingSeconds, finishedEarly, dismissed, onFinishEarly, onDismiss }: {
   pomodoro: PomodoroPayload | null;
   remainingSeconds: number;
   finishedEarly: boolean;
+  dismissed: boolean;
   onFinishEarly(): void;
+  onDismiss(): void;
 }) {
   if (!pomodoro || pomodoro.status === "stopped") return null;
   const status = pomodoro.status === "running" && remainingSeconds <= 0 ? "completed" : pomodoro.status;
+  if (status === "completed" && dismissed) return null;
   return (
     <div className={`student-pomodoro ${status}`}>
       <div><span>🍅</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注时间进行中" : status === "paused" ? "老师暂停了番茄钟" : "本轮番茄钟完成啦"}</small></div>
-      <button disabled={status !== "running" || finishedEarly} onClick={onFinishEarly}>{finishedEarly ? "已举手等待老师" : "我提前完成了，举手"}</button>
+      {status === "completed"
+        ? <button className="pomodoro-dismiss" onClick={onDismiss}>知道啦</button>
+        : <button disabled={status !== "running" || finishedEarly} onClick={onFinishEarly}>{finishedEarly ? "已举手等待老师" : "我提前完成了，举手"}</button>}
     </div>
   );
 }
@@ -444,6 +449,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
   const [pomodoro, setPomodoro] = useState<PomodoroPayload | null>(null);
   const [pomodoroFinishedEarly, setPomodoroFinishedEarly] = useState(false);
+  const [dismissedPomodoroId, setDismissedPomodoroId] = useState("");
   const [timerNow, setTimerNow] = useState(Date.now());
   const [focusMessage, setFocusMessage] = useState("");
   const [ended, setEnded] = useState(false);
@@ -552,7 +558,10 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       if (signal.msg_type === "POMODORO_CONTROL") {
         const payload = signal.payload as unknown as PomodoroPayload;
         setPomodoro(payload);
-        if (signal.action === "START_POMODORO" || signal.action === "RESUME_POMODORO") setPomodoroFinishedEarly(false);
+        if (signal.action === "START_POMODORO" || signal.action === "RESUME_POMODORO") {
+          setPomodoroFinishedEarly(false);
+          setDismissedPomodoroId("");
+        }
       }
       if (signal.msg_type === "ROOM_EVENT") {
         if (signal.action === "ROOM_ENDED") setEnded(true);
@@ -608,6 +617,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
     room.teacherId,
     ...room.students.map(({ student }) => student.id)
   ].filter((id) => id && id !== user.id);
+  const pomodoroCycleId = pomodoro ? `${pomodoro.startedAt ?? ""}-${pomodoro.durationSeconds}-${pomodoro.endsAt ?? ""}` : "";
   return (
     <RTCProvider
       selfId={user.id}
@@ -623,7 +633,14 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         <main className="student-class-layout">
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
           <StudentParticipantsPanel room={room} currentUserId={user.id} />
-          <StudentPomodoroPanel pomodoro={pomodoro} remainingSeconds={pomodoroRemaining} finishedEarly={pomodoroFinishedEarly} onFinishEarly={() => void finishPomodoroEarly()} />
+          <StudentPomodoroPanel
+            pomodoro={pomodoro}
+            remainingSeconds={pomodoroRemaining}
+            finishedEarly={pomodoroFinishedEarly}
+            dismissed={Boolean(pomodoroCycleId && dismissedPomodoroId === pomodoroCycleId)}
+            onFinishEarly={() => void finishPomodoroEarly()}
+            onDismiss={() => setDismissedPomodoroId(pomodoroCycleId)}
+          />
           <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} />
           <StudentVideoError />
         </main>

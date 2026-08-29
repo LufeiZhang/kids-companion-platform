@@ -222,6 +222,7 @@ export interface ClassroomPraisePayload {
 export interface RTCSignalPayload {
   description?: RTCSessionDescriptionInit;
   candidate?: RTCIceCandidateInit;
+  negotiationId?: string;
 }
 
 export interface StudentInteractionPayload {

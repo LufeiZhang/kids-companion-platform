@@ -27,11 +27,13 @@ export class PlaceholderRTCAdapter implements RTCProviderAdapter {
 
 type RTCMessage = SignalMessage<RTCSignalPayload>;
 type SendRTC = (action: RTCAction, payload: RTCSignalPayload, targetUid?: string) => void | Promise<void>;
+type PendingCandidate = { candidate: RTCIceCandidateInit; negotiationId?: string };
 
 interface PeerBundle {
   peer: RTCPeerConnection;
   remote: MediaStream;
-  pendingCandidates: RTCIceCandidateInit[];
+  pendingCandidates: PendingCandidate[];
+  activeNegotiationId?: string;
   localOfferCreatedAt?: number;
 }
 
@@ -72,6 +74,16 @@ function permissionMessage(error: unknown) {
   if (error.name === "NotFoundError") return "没有检测到可用的摄像头或麦克风";
   if (error.name === "NotReadableError") return "摄像头可能正被其他应用占用";
   return `无法开启音视频设备：${error.message}`;
+}
+
+function rtcConnectionMessage(error: unknown) {
+  if (error instanceof Error && error.message) return `音视频连接异常，正在自动重连：${error.message}`;
+  return "音视频连接异常，正在自动重连";
+}
+
+function createNegotiationId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function loadImage(src: string) {
@@ -274,7 +286,10 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     const bundle: PeerBundle = { peer, remote: new MediaStream(), pendingCandidates: [] };
     peersRef.current.set(peerId, bundle);
     peer.onicecandidate = ({ candidate }) => {
-      if (candidate) sendToPeer(peerId, "ICE_CANDIDATE", { candidate: candidate.toJSON() });
+      if (candidate) sendToPeer(peerId, "ICE_CANDIDATE", {
+        candidate: candidate.toJSON(),
+        negotiationId: bundle.activeNegotiationId
+      });
     };
     peer.ontrack = ({ track, streams }) => {
       const stream = streams[0];
@@ -301,12 +316,23 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     return bundle;
   }, [sendToPeer, shouldCreateOffer]);
 
+  const addRemoteCandidate = useCallback(async (bundle: PeerBundle, item: PendingCandidate) => {
+    if (item.negotiationId && bundle.activeNegotiationId && item.negotiationId !== bundle.activeNegotiationId) return;
+    try {
+      await bundle.peer.addIceCandidate(item.candidate);
+    } catch (reason) {
+      // ICE candidates can arrive late from an older offer/answer cycle.
+      // They should not be shown as camera/mic permission failures.
+      console.debug("Ignored stale ICE candidate", reason);
+    }
+  }, []);
+
   const flushCandidates = useCallback(async (bundle: PeerBundle) => {
     const peer = bundle.peer;
     if (!peer.remoteDescription) return;
     const candidates = bundle.pendingCandidates.splice(0);
-    for (const candidate of candidates) await peer.addIceCandidate(candidate);
-  }, []);
+    for (const candidate of candidates) await addRemoteCandidate(bundle, candidate);
+  }, [addRemoteCandidate]);
 
   const createOffer = useCallback(async (peerId: string, force = false) => {
     try {
@@ -322,12 +348,14 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         if ((peer.signalingState as RTCSignalingState) !== "stable") return;
       }
       await attachLocalTracks(peer);
-      const offer = await peer.createOffer();
+      const negotiationId = createNegotiationId();
+      bundle.activeNegotiationId = negotiationId;
+      const offer = await peer.createOffer({ iceRestart: force });
       await peer.setLocalDescription(offer);
       bundle.localOfferCreatedAt = Date.now();
-      sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? offer });
+      sendToPeer(peerId, "RTC_OFFER", { description: peer.localDescription ?? offer, negotiationId });
     } catch (reason) {
-      setError(permissionMessage(reason));
+      setError(rtcConnectionMessage(reason));
     }
   }, [attachLocalTracks, ensurePeer, sendToPeer]);
 
@@ -387,36 +415,54 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         const bundle = ensurePeer(peerId);
         const peer = bundle.peer;
         if (message.action === "RTC_OFFER" && message.payload.description) {
+          const negotiationId = message.payload.negotiationId ?? createNegotiationId();
           if (peer.signalingState !== "stable") {
             await peer.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit).catch(() => undefined);
             bundle.localOfferCreatedAt = undefined;
           }
+          bundle.activeNegotiationId = negotiationId;
+          bundle.pendingCandidates = bundle.pendingCandidates.filter((item) => !item.negotiationId || item.negotiationId === negotiationId);
           await attachLocalTracks(peer);
           await peer.setRemoteDescription(message.payload.description);
           await flushCandidates(bundle);
           const answer = await peer.createAnswer();
           await peer.setLocalDescription(answer);
-          sendToPeer(peerId, "RTC_ANSWER", { description: peer.localDescription ?? answer });
+          sendToPeer(peerId, "RTC_ANSWER", { description: peer.localDescription ?? answer, negotiationId });
         }
         if (message.action === "RTC_ANSWER" && message.payload.description) {
           if (peer.signalingState !== "have-local-offer") return;
+          if (message.payload.negotiationId && bundle.activeNegotiationId && message.payload.negotiationId !== bundle.activeNegotiationId) return;
           await peer.setRemoteDescription(message.payload.description);
+          if (message.payload.negotiationId) bundle.activeNegotiationId = message.payload.negotiationId;
           bundle.localOfferCreatedAt = undefined;
           await flushCandidates(bundle);
         }
         if (message.action === "ICE_CANDIDATE" && message.payload.candidate) {
-          if (peer.remoteDescription) await peer.addIceCandidate(message.payload.candidate);
-          else bundle.pendingCandidates.push(message.payload.candidate);
+          const item = { candidate: message.payload.candidate, negotiationId: message.payload.negotiationId };
+          if (item.negotiationId && bundle.activeNegotiationId && item.negotiationId !== bundle.activeNegotiationId) return;
+          if (peer.remoteDescription) await addRemoteCandidate(bundle, item);
+          else bundle.pendingCandidates.push(item);
         }
       } catch (reason) {
-        setError(permissionMessage(reason));
+        setError(rtcConnectionMessage(reason));
       }
     };
     const run = async () => {
       for (const message of unhandled) await handle(message);
     };
     void run();
-  }, [attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
+  }, [addRemoteCandidate, attachLocalTracks, createOffer, ensurePeer, flushCandidates, incoming, shouldCreateOffer]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const retryIds = allPeerIds().filter((peerId) => {
+        const state = peersRef.current.get(peerId)?.peer.connectionState ?? "new";
+        return state !== "connected";
+      });
+      if (retryIds.length) void renegotiatePeers(retryIds);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [allPeerIds, renegotiatePeers]);
 
   const stopVirtualOutput = useCallback(() => {
     virtualStopRef.current?.();
@@ -594,11 +640,19 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
   const hasVideo = Boolean(stream?.getVideoTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const hasAudio = Boolean(stream?.getAudioTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const active = hasVideo || hasAudio;
+  const peerConnectionState = peerId ? rtc.connectionStates[peerId] : rtc.connectionState;
+  const emptyMessage = (() => {
+    if (hasAudio) return "已连接语音";
+    if (source === "local") return "点击摄像头按钮开启";
+    if (peerConnectionState === "failed" || peerConnectionState === "disconnected") return "连接异常，正在自动重连";
+    if (peerConnectionState === "new" || peerConnectionState === "connecting") return "正在连接对方视频/语音";
+    return "等待对方开启摄像头";
+  })();
   return (
     <div className={`video-tile ${childFriendly ? "video-tile--child" : ""} ${active ? "is-live" : ""}`}>
       <video ref={videoRef} autoPlay playsInline muted />
       <audio ref={audioRef} autoPlay />
-      {!hasVideo && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{hasAudio ? "已连接语音" : source === "local" ? "点击摄像头按钮开启" : "等待对方开启摄像头"}</small></div>}
+      {!hasVideo && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{emptyMessage}</small></div>}
       {active && <span className="video-label">● {label}{hasAudio && !hasVideo ? " · 语音" : ""}</span>}
       {playBlocked && <button type="button" className="video-play-button" onClick={() => {
         void Promise.allSettled([
