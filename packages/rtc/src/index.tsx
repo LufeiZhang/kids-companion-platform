@@ -92,6 +92,28 @@ function isMLineOrderError(error: unknown) {
   return /order of m-lines|m-line/i.test(message);
 }
 
+type MediaDirection = "sendrecv" | "sendonly" | "recvonly" | "inactive";
+
+function parseOfferDirections(description?: RTCSessionDescriptionInit | RTCSessionDescription | null) {
+  const directions: MediaDirection[] = [];
+  const sections = description?.sdp?.split(/\r?\nm=/) ?? [];
+  for (let index = 1; index < sections.length; index += 1) {
+    const section = `m=${sections[index]}`;
+    const direction = (section.match(/^a=(sendrecv|sendonly|recvonly|inactive)$/m)?.[1] ?? "sendrecv") as MediaDirection;
+    directions.push(direction);
+  }
+  return directions;
+}
+
+function answerDirection(remoteDirection: MediaDirection | undefined, hasLocalTrack: boolean): RTCRtpTransceiverDirection {
+  const remoteCanSend = remoteDirection === "sendrecv" || remoteDirection === "sendonly" || !remoteDirection;
+  const remoteCanReceive = remoteDirection === "sendrecv" || remoteDirection === "recvonly" || !remoteDirection;
+  if (hasLocalTrack && remoteCanReceive && remoteCanSend) return "sendrecv";
+  if (hasLocalTrack && remoteCanReceive) return "sendonly";
+  if (remoteCanSend) return "recvonly";
+  return "inactive";
+}
+
 function loadImage(src: string) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
     const image = new Image();
@@ -273,15 +295,23 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     void sendRef.current?.(action, payload, peerId);
   }, []);
 
-  const attachLocalTracks = useCallback(async (peer: RTCPeerConnection) => {
+  const attachLocalTracks = useCallback(async (
+    peer: RTCPeerConnection,
+    mode: "offer" | "answer" = "offer",
+    remoteDirections: MediaDirection[] = []
+  ) => {
     for (const kind of ["audio", "video"] as const) {
       const track = localRef.current.getTracks().find((item) => item.kind === kind);
       let transceiver = peer.getTransceivers().find(({ receiver, sender }) => (
         sender.track?.kind === kind || receiver.track.kind === kind
       ));
-      if (!transceiver) transceiver = peer.addTransceiver(kind, { direction: track ? "sendrecv" : "recvonly" });
+      if (!transceiver && mode === "offer") transceiver = peer.addTransceiver(kind, { direction: track ? "sendrecv" : "recvonly" });
+      if (!transceiver) continue;
       await transceiver.sender.replaceTrack(track ?? null);
-      transceiver.direction = track ? "sendrecv" : "recvonly";
+      const transceiverIndex = peer.getTransceivers().indexOf(transceiver);
+      transceiver.direction = mode === "answer"
+        ? answerDirection(remoteDirections[transceiverIndex], Boolean(track))
+        : track ? "sendrecv" : "recvonly";
     }
   }, []);
 
@@ -471,13 +501,13 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
           let bundle = ensurePeer(peerId);
           let peer = bundle.peer;
           const negotiationId = message.payload.negotiationId ?? createNegotiationId();
+          const remoteDirections = parseOfferDirections(message.payload.description);
           if (peer.signalingState !== "stable") {
             await peer.setLocalDescription({ type: "rollback" } as RTCSessionDescriptionInit).catch(() => undefined);
             bundle.localOfferCreatedAt = undefined;
           }
           bundle.activeNegotiationId = negotiationId;
           bundle.pendingCandidates = bundle.pendingCandidates.filter((item) => !item.negotiationId || item.negotiationId === negotiationId);
-          await attachLocalTracks(peer);
           try {
             await peer.setRemoteDescription(message.payload.description);
           } catch (reason) {
@@ -486,9 +516,9 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
             bundle = ensurePeer(peerId);
             peer = bundle.peer;
             bundle.activeNegotiationId = negotiationId;
-            await attachLocalTracks(peer);
             await peer.setRemoteDescription(message.payload.description);
           }
+          await attachLocalTracks(peer, "answer", remoteDirections);
           await flushCandidates(bundle);
           let answer = await peer.createAnswer();
           try {
@@ -499,8 +529,8 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
             bundle = ensurePeer(peerId);
             peer = bundle.peer;
             bundle.activeNegotiationId = negotiationId;
-            await attachLocalTracks(peer);
             await peer.setRemoteDescription(message.payload.description);
+            await attachLocalTracks(peer, "answer", remoteDirections);
             await flushCandidates(bundle);
             answer = await peer.createAnswer();
             await peer.setLocalDescription(answer);
