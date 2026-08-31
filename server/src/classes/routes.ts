@@ -52,6 +52,7 @@ classesRouter.post("/", requireAuth(["teacher"]), async (request: AuthRequest, r
   const { title, studentIds } = request.body as { title?: string; studentIds?: string[] };
   const uniqueStudentIds = [...new Set((studentIds ?? []).filter((studentId): studentId is string => typeof studentId === "string" && Boolean(studentId)))];
   if (!title || !uniqueStudentIds.length) return response.status(400).json({ message: "请选择至少一名学生" });
+  if (uniqueStudentIds.length > 20) return response.status(400).json({ message: "一个课堂最多支持 20 名学生" });
   const allowedStudents = await prisma.user.count({
     where: {
       id: { in: uniqueStudentIds },

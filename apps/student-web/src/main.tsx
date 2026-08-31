@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Socket } from "socket.io-client";
 import {
@@ -20,10 +20,13 @@ const APP_BASE = import.meta.env.BASE_URL;
 const appUrl = (path = "") => `${APP_BASE}${path}`;
 type StudentView = "home" | "tasks" | "treasure" | "ai";
 type AiChatMessage = { id: number; role: "student" | "assistant"; text: string; meta?: string };
+type StudentPrivateMessage = { id: string; from: "student" | "teacher"; text: string; createdAt: number };
+type HelpRoomState = { active: boolean; helpRoomId?: string; message?: string };
 const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
+const resolveFileUrl = (url?: string) => !url ? undefined : /^https?:\/\//i.test(url) ? url : `${API_URL}${url}`;
 const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
   if (!pomodoro) return 0;
-  if (pomodoro.status === "running" && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
+  if ((pomodoro.status === "running" || pomodoro.status === "break") && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
   return Math.max(0, pomodoro.remainingSeconds ?? pomodoro.durationSeconds ?? 0);
 };
 const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
@@ -327,19 +330,24 @@ function StudentPomodoroPanel({ pomodoro, remainingSeconds, finishedEarly, dismi
   if (!pomodoro || pomodoro.status === "stopped") return null;
   const status = pomodoro.status === "running" && remainingSeconds <= 0 ? "completed" : pomodoro.status;
   if (status === "completed" && dismissed) return null;
+  const isBreak = status === "break";
   return (
     <div className={`student-pomodoro ${status}`}>
-      <div><span>🍅</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注时间进行中" : status === "paused" ? "老师暂停了番茄钟" : "本轮番茄钟完成啦"}</small></div>
-      {status === "completed"
+      <div><span>{isBreak ? "☕" : "🍅"}</span><b>{formatSeconds(remainingSeconds)}</b><small>{isBreak ? "全班休息中，结束后老师会召回" : status === "running" ? "专注时间进行中" : status === "paused" ? "老师暂停了番茄钟" : "本轮番茄钟完成啦"}</small></div>
+      {isBreak
+        ? <button className="pomodoro-dismiss" onClick={onDismiss}>我知道了</button>
+        : status === "completed"
         ? <button className="pomodoro-dismiss" onClick={onDismiss}>知道啦</button>
         : <button disabled={status !== "running" || finishedEarly} onClick={onFinishEarly}>{finishedEarly ? "已举手等待老师" : "我提前完成了，举手"}</button>}
     </div>
   );
 }
 
-function ClassroomControls({ sendStatus, sendInteraction }: {
+function ClassroomControls({ sendStatus, sendInteraction, micLocked = false, cameraLocked = false }: {
   sendStatus(action: StudentStatusAction): void;
   sendInteraction(action: StudentInteractionAction, payload: StudentInteractionPayload): Promise<boolean>;
+  micLocked?: boolean;
+  cameraLocked?: boolean;
 }) {
   const rtc = useRTC();
   const backgroundUrlRef = useRef<string | null>(null);
@@ -385,8 +393,8 @@ function ClassroomControls({ sendStatus, sendInteraction }: {
   return (
     <>
       <div className="student-controls">
-        <button title="麦克风仅用于本次课堂通话，不会录音" className={!rtc.micOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn ? "🎙️" : "🔇"}</span>麦克风</button>
-        <button title="摄像头仅用于本次课堂通话，不会录像" className={!rtc.cameraOn ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn ? "📹" : "🚫"}</span>摄像头</button>
+        <button title={micLocked ? "老师已设置静音" : "麦克风仅用于本次课堂通话，不会录音"} disabled={micLocked} className={!rtc.micOn || micLocked ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleMic(); sendStatus(enabled ? "MIC_ON" : "MIC_OFF"); }}><span>{rtc.micOn && !micLocked ? "🎙️" : "🔇"}</span>{micLocked ? "已静音" : "麦克风"}</button>
+        <button title={cameraLocked ? "老师已关闭摄像头" : "摄像头仅用于本次课堂通话，不会录像"} disabled={cameraLocked} className={!rtc.cameraOn || cameraLocked ? "off" : ""} onClick={async () => { const enabled = await rtc.toggleCamera(); sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF"); }}><span>{rtc.cameraOn && !cameraLocked ? "📹" : "🚫"}</span>{cameraLocked ? "摄像头关" : "摄像头"}</button>
         <label title="选择一张图片作为对方看到的视频背景" className={`control-file ${rtc.virtualBackgroundUrl ? "active" : ""}`}><span>🖼️</span>背景<input hidden type="file" accept="image/*" onChange={chooseBackground} /></label>
         {rtc.virtualBackgroundUrl && <button title="清除虚拟背景" onClick={() => void clearBackground()}><span>↩</span>清背景</button>}
         <button className={handRaised ? "active" : ""} onClick={() => void toggleHand()}><span>✋</span>{handRaised ? "已举手" : "举手"}</button>
@@ -398,17 +406,89 @@ function ClassroomControls({ sendStatus, sendInteraction }: {
   );
 }
 
+function StudentMeetingControlEffects({ control, sendStatus, onNotice, setMicLocked, setCameraLocked }: {
+  control: SignalMessage | null;
+  sendStatus(action: StudentStatusAction): void;
+  onNotice(message: string): void;
+  setMicLocked(locked: boolean): void;
+  setCameraLocked(locked: boolean): void;
+}) {
+  const rtc = useRTC();
+  const handledRef = useRef("");
+  useEffect(() => {
+    if (!control || control.msg_type !== "TEACHER_CONTROL" || handledRef.current === control.msg_id) return;
+    handledRef.current = control.msg_id;
+    const payload = control.payload as { message?: string };
+    const run = async () => {
+      if (control.action === "MUTE_STUDENT" || control.action === "MUTE_ALL") {
+        setMicLocked(true);
+        if (rtc.micOn) {
+          const enabled = await rtc.toggleMic();
+          sendStatus(enabled ? "MIC_ON" : "MIC_OFF");
+        }
+        onNotice(payload.message ?? "老师已将你静音，如需帮助可以给老师私信。");
+      }
+      if (control.action === "UNMUTE_STUDENT") {
+        setMicLocked(false);
+        onNotice(payload.message ?? "老师已允许你打开麦克风，需要发言时可以点击麦克风。");
+      }
+      if (control.action === "CAMERA_OFF_STUDENT" || control.action === "CAMERA_OFF_ALL") {
+        setCameraLocked(true);
+        if (rtc.cameraOn) {
+          const enabled = await rtc.toggleCamera();
+          sendStatus(enabled ? "CAMERA_ON" : "CAMERA_OFF");
+        }
+        onNotice(payload.message ?? "老师已关闭你的摄像头，请继续看学习内容。");
+      }
+      if (control.action === "CAMERA_ON_REQUEST") {
+        setCameraLocked(false);
+        onNotice(payload.message ?? "老师希望你打开摄像头，确认后请点击摄像头按钮。");
+      }
+      if (control.action === "START_RECORDING_NOTICE") onNotice(payload.message ?? "老师已开始课堂录制，本次录制需获得家长授权。");
+      if (control.action === "STOP_RECORDING_NOTICE") onNotice(payload.message ?? "老师已停止课堂录制。");
+    };
+    void run();
+  }, [control, onNotice, rtc, rtc.cameraOn, rtc.micOn, sendStatus, setCameraLocked, setMicLocked]);
+  return null;
+}
+
 function StudentVideoError() {
   const rtc = useRTC();
   return rtc.error ? <div className="rtc-error">⚠ {rtc.error}</div> : null;
 }
 
-function StudentParticipantsPanel({ room, currentUserId }: { room: Classroom; currentUserId: string }) {
+function StudentPrivateHelpPanel({ active, messages, draft, setDraft, onSend }: {
+  active: boolean;
+  messages: StudentPrivateMessage[];
+  draft: string;
+  setDraft(value: string): void;
+  onSend(): void;
+}) {
+  const recent = messages.slice(-4);
+  return (
+    <aside className={`private-help-panel ${active ? "active" : ""}`}>
+      <div className="private-help-head">
+        <div><b>{active ? "单人答疑中" : "私信老师"}</b><small>只发给老师，同学之间不能互聊</small></div>
+        <span>{active ? "🧑‍🏫" : "💬"}</span>
+      </div>
+      <div className="private-help-messages">
+        {recent.map((message) => <p key={message.id} className={message.from}><b>{message.from === "student" ? "我" : "老师"}：</b>{message.text}</p>)}
+        {!recent.length && <small>需要老师帮助时，可以在这里简短说明问题。</small>}
+      </div>
+      <div className="private-help-input">
+        <input value={draft} maxLength={160} placeholder="给老师发一句话…" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") onSend(); }} />
+        <button onClick={onSend}>发送</button>
+      </div>
+    </aside>
+  );
+}
+
+function StudentParticipantsPanel({ room, currentUserId, displayNames }: { room: Classroom; currentUserId: string; displayNames: Record<string, string> }) {
   const participants = [
-    { id: room.teacherId, name: room.teacher?.name ?? "老师", role: "老师", self: false },
+    { id: room.teacherId, name: displayNames[room.teacherId] ?? room.teacher?.name ?? "老师", role: "老师", self: false },
     ...room.students.map(({ student }) => ({
       id: student.id,
-      name: student.name,
+      name: displayNames[student.id] ?? student.name,
       role: student.id === currentUserId ? "我" : "同学",
       self: student.id === currentUserId
     }))
@@ -452,6 +532,13 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const [dismissedPomodoroId, setDismissedPomodoroId] = useState("");
   const [timerNow, setTimerNow] = useState(Date.now());
   const [focusMessage, setFocusMessage] = useState("");
+  const [teacherControl, setTeacherControl] = useState<SignalMessage | null>(null);
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
+  const [helpRoom, setHelpRoom] = useState<HelpRoomState>({ active: false });
+  const [privateMessages, setPrivateMessages] = useState<StudentPrivateMessage[]>([]);
+  const [privateDraft, setPrivateDraft] = useState("");
+  const [micLocked, setMicLocked] = useState(false);
+  const [cameraLocked, setCameraLocked] = useState(false);
   const [ended, setEnded] = useState(false);
   const [connection, setConnection] = useState("正在连接老师…");
   useEffect(() => {
@@ -517,7 +604,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       setRoom(data);
       setPage(data.currentPage ?? 1);
       setCourseware(data.courseware ? {
-        url: `${API_URL}${data.courseware.fileUrl}`,
+        url: resolveFileUrl(data.courseware.fileUrl),
         type: data.courseware.type
       } : {});
       setPomodoro(pomodoroFromRoom(data));
@@ -543,7 +630,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       if (signal.msg_type === "COURSEWARE_CONTROL") {
         const payload = signal.payload as unknown as CoursewarePayload;
         setPage(payload.page ?? 1);
-        setCourseware({ url: payload.file_url, type: payload.file_type });
+        setCourseware({ url: resolveFileUrl(payload.file_url), type: payload.file_type });
       }
       if (signal.msg_type === "TEACHER_CONTROL" && signal.action === "GRANT_REWARD") {
         setReward(signal.payload as unknown as RewardPayload);
@@ -551,6 +638,29 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       if (signal.msg_type === "TEACHER_CONTROL" && signal.action === "FOCUS_REMINDER") {
         const payload = signal.payload as { message?: string };
         setFocusMessage(payload.message ?? "小眼睛看回来啦，我们继续学习哦！");
+      }
+      if (signal.msg_type === "TEACHER_CONTROL") {
+        const payload = signal.payload as { user_id?: string; display_name?: string; help_room_id?: string; message?: string };
+        if (signal.action === "RENAME_PARTICIPANT" && payload.user_id && payload.display_name) {
+          setDisplayNames((current) => ({ ...current, [payload.user_id!]: payload.display_name! }));
+        }
+        if (signal.action === "OPEN_HELP_ROOM") {
+          setHelpRoom({ active: true, helpRoomId: payload.help_room_id, message: payload.message });
+          setFocusMessage(payload.message ?? "老师正在单独给你答疑，不会打扰全班。");
+        }
+        if (signal.action === "CLOSE_HELP_ROOM") {
+          setHelpRoom({ active: false, message: payload.message });
+          setFocusMessage(payload.message ?? "本次单人答疑已完成，请继续跟上全班学习。");
+        }
+        if (signal.action === "PRIVATE_TEACHER_REPLY" && payload.message) {
+          setPrivateMessages((current) => [...current.slice(-80), {
+            id: signal.msg_id,
+            from: "teacher",
+            text: payload.message ?? "",
+            createdAt: Date.now()
+          }]);
+        }
+        setTeacherControl(signal);
       }
       if (signal.msg_type === "CLASSROOM_PRAISE") {
         setClassroomPraise(signal.payload as unknown as ClassroomPraisePayload);
@@ -561,6 +671,16 @@ function StudentClassroom({ roomId }: { roomId: string }) {
         if (signal.action === "START_POMODORO" || signal.action === "RESUME_POMODORO") {
           setPomodoroFinishedEarly(false);
           setDismissedPomodoroId("");
+        }
+        if (signal.action === "START_BREAK_TIMER") {
+          setPomodoroFinishedEarly(false);
+          setDismissedPomodoroId("");
+          setFocusMessage("休息开始啦，按老师安排休息，倒计时结束后回到学习状态。");
+        }
+        if (signal.action === "RECALL_STUDENTS" || signal.action === "END_BREAK_TIMER") {
+          setPomodoroFinishedEarly(false);
+          setDismissedPomodoroId("");
+          setFocusMessage("休息结束啦，请回到学习页面，我们继续学习。");
         }
       }
       if (signal.msg_type === "ROOM_EVENT") {
@@ -611,13 +731,31 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       setPomodoroFinishedEarly(true);
     }
   };
+  const sendPrivateMessage = async () => {
+    const text = privateDraft.trim();
+    if (!text) return;
+    setPrivateDraft("");
+    setPrivateMessages((current) => [...current.slice(-80), {
+      id: crypto.randomUUID(),
+      from: "student",
+      text,
+      createdAt: Date.now()
+    }]);
+    const ok = await sendInteraction("PRIVATE_MESSAGE", {
+      message: text,
+      help_room_id: helpRoom.helpRoomId,
+      display_name: displayNames[user.id] ?? user.name
+    });
+    if (!ok) setPrivateDraft(text);
+  };
 
   if (!room) return <div className="kid-loading"><span>⭐</span>正在飞往课堂…</div>;
+  const effectiveUserName = displayNames[user.id] ?? user.name;
   const rtcPeerIds = [
     room.teacherId,
     ...room.students.map(({ student }) => student.id)
   ].filter((id) => id && id !== user.id);
-  const pomodoroCycleId = pomodoro ? `${pomodoro.startedAt ?? ""}-${pomodoro.durationSeconds}-${pomodoro.endsAt ?? ""}` : "";
+  const pomodoroCycleId = pomodoro ? `${pomodoro.status}-${pomodoro.startedAt ?? ""}-${pomodoro.durationSeconds}-${pomodoro.endsAt ?? ""}` : "";
   return (
     <RTCProvider
       selfId={user.id}
@@ -629,10 +767,11 @@ function StudentClassroom({ roomId }: { roomId: string }) {
       sendRTC={sendRTC}
     >
       <div className="student-classroom">
-        <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">认真听讲的你最闪亮 ✨</span><LanguageSwitcher language={language} onChange={setLanguage} className="class-language" /></header>
+        <StudentMeetingControlEffects control={teacherControl} sendStatus={sendStatus} onNotice={setFocusMessage} setMicLocked={setMicLocked} setCameraLocked={setCameraLocked} />
+        <header className="student-classbar"><a href={appUrl()}>★ 星星伴学</a><div><span className="live-dot">●</span><b>{room.title}</b><small>{connection}</small></div><span className="class-motto">{effectiveUserName}，认真听讲的你最闪亮 ✨</span><LanguageSwitcher language={language} onChange={setLanguage} className="class-language" /></header>
         <main className="student-class-layout">
           <section className="student-board"><Whiteboard page={page} editable={false} incoming={incoming} backgroundUrl={courseware.url} backgroundType={courseware.type} /></section>
-          <StudentParticipantsPanel room={room} currentUserId={user.id} />
+          <StudentParticipantsPanel room={room} currentUserId={user.id} displayNames={displayNames} />
           <StudentPomodoroPanel
             pomodoro={pomodoro}
             remainingSeconds={pomodoroRemaining}
@@ -641,7 +780,14 @@ function StudentClassroom({ roomId }: { roomId: string }) {
             onFinishEarly={() => void finishPomodoroEarly()}
             onDismiss={() => setDismissedPomodoroId(pomodoroCycleId)}
           />
-          <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} />
+          <StudentPrivateHelpPanel
+            active={helpRoom.active}
+            messages={privateMessages}
+            draft={privateDraft}
+            setDraft={setPrivateDraft}
+            onSend={() => void sendPrivateMessage()}
+          />
+          <ClassroomControls sendStatus={sendStatus} sendInteraction={sendInteraction} micLocked={micLocked} cameraLocked={cameraLocked} />
           <StudentVideoError />
         </main>
         {reward && <RewardOverlay reward={reward} onDone={() => setReward(null)} />}

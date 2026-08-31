@@ -179,10 +179,17 @@ export function createSocketGateway(httpServer: HttpServer, origins: string[]) {
           }
           const activePomodoro = pomodoroPayloadFromRoom(access.room);
           if (activePomodoro) {
+            const action = activePomodoro.status === "break"
+              ? "START_BREAK_TIMER"
+              : activePomodoro.status === "paused"
+                ? "PAUSE_POMODORO"
+                : activePomodoro.status === "completed"
+                  ? "FINISH_POMODORO"
+                  : "START_POMODORO";
             socket.emit("signal", {
               msg_id: crypto.randomUUID(),
               msg_type: "POMODORO_CONTROL",
-              action: activePomodoro.status === "paused" ? "PAUSE_POMODORO" : activePomodoro.status === "completed" ? "FINISH_POMODORO" : "START_POMODORO",
+              action,
               room_id: message.room_id,
               from_uid: access.room.teacherId,
               target_uid: socket.data.user.id,

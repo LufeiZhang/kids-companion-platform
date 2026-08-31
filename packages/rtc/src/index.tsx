@@ -48,9 +48,15 @@ interface RTCContextValue {
   connectionStates: Record<string, RTCPeerConnectionState | "idle">;
   error: string;
   virtualBackgroundUrl: string | null;
+  screenSharing: boolean;
+  recording: boolean;
+  recordingUrl: string | null;
   toggleCamera(): Promise<boolean>;
   toggleMic(): Promise<boolean>;
   setVirtualBackground(imageUrl: string | null): Promise<void>;
+  toggleScreenShare(): Promise<boolean>;
+  startRecording(): Promise<boolean>;
+  stopRecording(): Promise<string | null>;
 }
 
 interface RTCProviderProps {
@@ -255,6 +261,13 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   const handledMessages = useRef<Set<string>>(new Set());
   const rawVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const outboundVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const micTrackRef = useRef<MediaStreamTrack | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const preScreenVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const preScreenAudioTrackRef = useRef<MediaStreamTrack | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingUrlRef = useRef<string | null>(null);
   const virtualStopRef = useRef<(() => void) | null>(null);
   const virtualBackgroundRef = useRef<string | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -264,6 +277,9 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   const [connectionStates, setConnectionStates] = useState<Record<string, RTCPeerConnectionState | "idle">>({});
   const [error, setError] = useState("");
   const [virtualBackgroundUrl, setVirtualBackgroundUrl] = useState<string | null>(null);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
   const createOfferRef = useRef<(peerId: string, force?: boolean, reset?: boolean) => Promise<void>>(async () => undefined);
 
   useEffect(() => { sendRef.current = sendRTC; }, [sendRTC]);
@@ -601,6 +617,16 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
     await renegotiatePeers(undefined, { force: true, recreate: true });
   }, [renegotiatePeers]);
 
+  const installLocalAudioTrack = useCallback(async (track: MediaStreamTrack | null) => {
+    for (const oldTrack of localRef.current.getAudioTracks()) {
+      localRef.current.removeTrack(oldTrack);
+      if (oldTrack !== track && oldTrack !== micTrackRef.current) oldTrack.stop();
+    }
+    if (track) localRef.current.addTrack(track);
+    setLocalStream(new MediaStream(localRef.current.getTracks()));
+    await renegotiatePeers(undefined, { force: true, recreate: true });
+  }, [renegotiatePeers]);
+
   const rebuildVideoOutput = useCallback(async (rawTrack = rawVideoTrackRef.current) => {
     if (!rawTrack || rawTrack.readyState === "ended") return false;
     stopVirtualOutput();
@@ -649,6 +675,7 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
         oldTrack.stop();
         localRef.current.removeTrack(oldTrack);
       }
+      micTrackRef.current = track;
       localRef.current.addTrack(track);
       setLocalStream(new MediaStream(localRef.current.getTracks()));
       setMicOn(true);
@@ -677,13 +704,119 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   }, [addTrack, renegotiatePeers]);
 
   const toggleMic = useCallback(async () => {
-    const track = localRef.current.getAudioTracks()[0];
+    const track = micTrackRef.current ?? localRef.current.getAudioTracks()[0];
     if (!track || track.readyState === "ended") return addTrack("audio");
     track.enabled = !track.enabled;
     setMicOn(track.enabled);
+    if (!screenSharing) setLocalStream(new MediaStream(localRef.current.getTracks()));
     await renegotiatePeers(undefined, { force: true });
     return track.enabled;
-  }, [addTrack, renegotiatePeers]);
+  }, [addTrack, renegotiatePeers, screenSharing]);
+
+  const stopScreenShare = useCallback(async () => {
+    const stream = screenStreamRef.current;
+    screenStreamRef.current = null;
+    stream?.getTracks().forEach((track) => track.stop());
+    setScreenSharing(false);
+    const restoreAudio = preScreenAudioTrackRef.current && preScreenAudioTrackRef.current.readyState !== "ended"
+      ? preScreenAudioTrackRef.current
+      : null;
+    preScreenVideoTrackRef.current = null;
+    preScreenAudioTrackRef.current = null;
+    if (rawVideoTrackRef.current && rawVideoTrackRef.current.readyState !== "ended") await rebuildVideoOutput(rawVideoTrackRef.current);
+    else await installLocalVideoTrack(null);
+    if (restoreAudio || localRef.current.getAudioTracks().length) await installLocalAudioTrack(restoreAudio);
+  }, [installLocalAudioTrack, installLocalVideoTrack, rebuildVideoOutput]);
+
+  const toggleScreenShare = useCallback(async () => {
+    if (screenSharing) {
+      await stopScreenShare();
+      return false;
+    }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      setError("当前浏览器不支持屏幕共享，请使用最新版 Chrome 或 Edge");
+      return false;
+    }
+    try {
+      setError("");
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
+      });
+      const screenVideo = stream.getVideoTracks()[0] ?? null;
+      const screenAudio = stream.getAudioTracks()[0] ?? null;
+      if (!screenVideo) {
+        stream.getTracks().forEach((track) => track.stop());
+        setError("未选择可共享的屏幕画面");
+        return false;
+      }
+      preScreenVideoTrackRef.current = outboundVideoTrackRef.current;
+      preScreenAudioTrackRef.current = localRef.current.getAudioTracks()[0] ?? null;
+      screenStreamRef.current = stream;
+      screenVideo.onended = () => {
+        void stopScreenShare();
+      };
+      await installLocalVideoTrack(screenVideo);
+      if (screenAudio) await installLocalAudioTrack(screenAudio);
+      setScreenSharing(true);
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? `屏幕共享未开启：${reason.message}` : "屏幕共享未开启");
+      return false;
+    }
+  }, [installLocalAudioTrack, installLocalVideoTrack, screenSharing, stopScreenShare]);
+
+  const startRecording = useCallback(async () => {
+    if (recording) return true;
+    if (typeof MediaRecorder === "undefined") {
+      setError("当前浏览器不支持课堂本地录制");
+      return false;
+    }
+    try {
+      if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      const stream = new MediaStream([
+        ...localRef.current.getTracks(),
+        ...Array.from(peersRef.current.values()).flatMap(({ remote }) => remote.getTracks())
+      ].filter((track) => track.readyState === "live"));
+      if (!stream.getTracks().length) {
+        setError("当前没有可录制的音视频流，请先开启摄像头、麦克风或屏幕共享");
+        return false;
+      }
+      recordingChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm" });
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        recordingUrlRef.current = url;
+        setRecordingUrl(url);
+      };
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setRecording(true);
+      setRecordingUrl(null);
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? `录制启动失败：${reason.message}` : "录制启动失败");
+      return false;
+    }
+  }, [recording]);
+
+  const stopRecording = useCallback(async () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return recordingUrlRef.current;
+    return await new Promise<string | null>((resolve) => {
+      const finish = () => {
+        setRecording(false);
+        mediaRecorderRef.current = null;
+        window.setTimeout(() => resolve(recordingUrlRef.current), 0);
+      };
+      recorder.addEventListener("stop", finish, { once: true });
+      recorder.stop();
+    });
+  }, []);
 
   const setVirtualBackground = useCallback(async (imageUrl: string | null) => {
     virtualBackgroundRef.current = imageUrl;
@@ -694,6 +827,8 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
 
   useEffect(() => () => {
     stopVirtualOutput();
+    mediaRecorderRef.current?.stop();
+    screenStreamRef.current?.getTracks().forEach((track) => track.stop());
     const rawTrack = rawVideoTrackRef.current;
     if (rawTrack && !localRef.current.getTracks().includes(rawTrack)) rawTrack.stop();
     localRef.current.getTracks().forEach((track) => track.stop());
@@ -711,10 +846,11 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   }, [connectionStates, peerIds]);
   const value = useMemo<RTCContextValue>(() => ({
     cameraOn, micOn, localStream, remoteStream, remoteStreams, connectionState, connectionStates,
-    error, virtualBackgroundUrl, toggleCamera, toggleMic, setVirtualBackground
+    error, virtualBackgroundUrl, screenSharing, recording, recordingUrl,
+    toggleCamera, toggleMic, setVirtualBackground, toggleScreenShare, startRecording, stopRecording
   }), [
-    cameraOn, connectionState, connectionStates, error, localStream, micOn, remoteStream, remoteStreams,
-    setVirtualBackground, toggleCamera, toggleMic, virtualBackgroundUrl
+    cameraOn, connectionState, connectionStates, error, localStream, micOn, recording, recordingUrl, remoteStream, remoteStreams,
+    screenSharing, setVirtualBackground, startRecording, stopRecording, toggleCamera, toggleMic, toggleScreenShare, virtualBackgroundUrl
   ]);
 
   return <RTCContext.Provider value={value}>{children}</RTCContext.Provider>;
@@ -738,6 +874,7 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
   const videoRef = useRef<HTMLVideoElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playBlocked, setPlayBlocked] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
   const isMuted = muted ?? source === "local";
   useEffect(() => {
     const video = videoRef.current;
@@ -758,6 +895,37 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
     const play = audio.play();
     if (play) play.catch(() => setPlayBlocked(true));
   }, [isMuted, stream]);
+  useEffect(() => {
+    const audioTrack = stream?.getAudioTracks().find(({ enabled, readyState }) => enabled && readyState === "live");
+    if (!audioTrack) {
+      setSpeaking(false);
+      return;
+    }
+    const AudioContextCtor = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const context = new AudioContextCtor();
+    const sourceNode = context.createMediaStreamSource(new MediaStream([audioTrack]));
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    sourceNode.connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let frame = 0;
+    let speakingFrames = 0;
+    const check = () => {
+      analyser.getByteFrequencyData(data);
+      const average = data.reduce((sum, value) => sum + value, 0) / Math.max(1, data.length);
+      speakingFrames = average > 18 ? Math.min(6, speakingFrames + 1) : Math.max(0, speakingFrames - 1);
+      setSpeaking(speakingFrames >= 2);
+      frame = window.setTimeout(check, 300);
+    };
+    check();
+    return () => {
+      window.clearTimeout(frame);
+      sourceNode.disconnect();
+      void context.close();
+      setSpeaking(false);
+    };
+  }, [stream]);
   const hasVideo = Boolean(stream?.getVideoTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const hasAudio = Boolean(stream?.getAudioTracks().some(({ enabled, readyState }) => enabled && readyState === "live"));
   const active = hasVideo || hasAudio;
@@ -770,11 +938,12 @@ export function VideoTile({ label, source = "remote", peerId, childFriendly = fa
     return "等待对方开启摄像头";
   })();
   return (
-    <div className={`video-tile ${childFriendly ? "video-tile--child" : ""} ${active ? "is-live" : ""}`}>
+    <div className={`video-tile ${childFriendly ? "video-tile--child" : ""} ${active ? "is-live" : ""} ${speaking ? "is-speaking" : ""}`}>
       <video ref={videoRef} autoPlay playsInline muted />
       <audio ref={audioRef} autoPlay />
       {!hasVideo && <div className="video-empty"><span className="video-avatar">{source === "local" ? "🙂" : "👩‍🏫"}</span><strong>{label}</strong><small>{emptyMessage}</small></div>}
       {active && <span className="video-label">● {label}{hasAudio && !hasVideo ? " · 语音" : ""}</span>}
+      {speaking && <span className="speaker-badge">正在说话</span>}
       {playBlocked && <button type="button" className="video-play-button" onClick={() => {
         void Promise.allSettled([
           videoRef.current?.play(),

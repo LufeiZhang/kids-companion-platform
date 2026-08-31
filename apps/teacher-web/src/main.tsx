@@ -43,6 +43,24 @@ interface TeacherReward {
   student: { id?: string; name: string };
   room: { title: string; teacherId?: string };
 }
+type StudentPresence = "online" | "hidden" | "idle" | "offline";
+type HelpTicketStatus = "pending" | "active" | "resolved" | "cancelled";
+interface HelpTicket {
+  id: string;
+  studentId: string;
+  studentName: string;
+  createdAt: number;
+  status: HelpTicketStatus;
+  message?: string;
+}
+interface PrivateMessage {
+  id: string;
+  studentId: string;
+  studentName: string;
+  message: string;
+  createdAt: number;
+  from: "student" | "teacher";
+}
 
 const rewardIcon = (type: string) => type === "red_flower" ? "🌸" : type === "trophy" ? "🏆" : type === "confetti" ? "🎉" : type === "task_praise" ? "👏" : "⭐";
 const rewardLabel = (type: string) => type === "red_flower" ? "小红花" : type === "trophy" ? "奖杯" : type === "confetti" ? "彩带" : type === "task_praise" ? "任务表扬" : "星星雨";
@@ -55,7 +73,7 @@ const clampNumber = (value: number, min: number, max: number) => Math.max(min, M
 const formatSeconds = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60).toString().padStart(2, "0")}:${Math.max(0, seconds % 60).toString().padStart(2, "0")}`;
 const remainingPomodoroSeconds = (pomodoro: PomodoroPayload | null, now = Date.now()) => {
   if (!pomodoro) return 0;
-  if (pomodoro.status === "running" && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
+  if ((pomodoro.status === "running" || pomodoro.status === "break") && pomodoro.endsAt) return Math.max(0, Math.ceil((pomodoro.endsAt - now) / 1000));
   return Math.max(0, pomodoro.remainingSeconds ?? pomodoro.durationSeconds ?? 0);
 };
 const pomodoroFromRoom = (room: Classroom): PomodoroPayload | null => {
@@ -319,6 +337,10 @@ function Dashboard() {
       setModalError("请至少选择一名学生");
       return;
     }
+    if (selected.length > 20) {
+      setModalError("一个课堂最多选择 20 名学生");
+      return;
+    }
     setCreating(true);
     setModalError("");
     try {
@@ -423,27 +445,32 @@ function Dashboard() {
   );
 }
 
-function TeacherVideoPanel({ studentId, studentName, studentState, selected, onSelect, handRaised, emoji, emojiKey, pomodoroDone }: {
+const presenceLabel = (state: StudentPresence) =>
+  state === "hidden" ? "⚠ 可能离开页面" : state === "idle" ? "⏱ 长时间无操作" : state === "online" ? "● 在线学习" : "○ 等待加入";
+
+function TeacherVideoPanel({ studentId, studentName, studentState, selected, onSelect, handRaised, emoji, emojiKey, pomodoroDone, muted, cameraOff }: {
   studentId: string;
   studentName: string;
-  studentState: "online" | "hidden" | "offline";
+  studentState: StudentPresence;
   selected: boolean;
   onSelect(): void;
   handRaised?: boolean;
   emoji?: string;
   emojiKey?: number;
   pomodoroDone?: boolean;
+  muted?: boolean;
+  cameraOff?: boolean;
 }) {
   return (
     <button type="button" className={`student-video-card ${selected ? "selected" : ""}`} onClick={onSelect}>
       <VideoTile label={studentName} peerId={studentId} />
       {emoji && <div className="teacher-emoji-pop" key={emojiKey}>{emoji}</div>}
-      <div className="student-state"><b>{studentName}</b><div>{selected && <span className="target-badge">当前目标</span>}{handRaised && <span className="hand-raised">✋ 已举手</span>}{pomodoroDone && <span className="pomodoro-done">🍅 已提前完成</span>}<span className={`state ${studentState}`}>{studentState === "hidden" ? "⚠ 可能离开页面" : studentState === "online" ? "● 在线学习" : "○ 等待加入"}</span></div></div>
+      <div className="student-state"><b>{studentName}</b><div>{selected && <span className="target-badge">当前目标</span>}{handRaised && <span className="hand-raised">✋ 已举手</span>}{pomodoroDone && <span className="pomodoro-done">🍅 已提前完成</span>}{muted && <span className="media-badge">静音</span>}{cameraOff && <span className="media-badge">摄像头关</span>}<span className={`state ${studentState}`}>{presenceLabel(studentState)}</span></div></div>
     </button>
   );
 }
 
-function TeacherRTCControls() {
+function TeacherRTCControls({ onRecordingNotice }: { onRecordingNotice(active: boolean): void }) {
   const rtc = useRTC();
   const backgroundUrlRef = useRef<string | null>(null);
   const [backgroundName, setBackgroundName] = useState("");
@@ -471,21 +498,35 @@ function TeacherRTCControls() {
       <div className="teacher-rtc-controls">
         <button className={rtc.cameraOn ? "active" : ""} onClick={() => void rtc.toggleCamera()}>{rtc.cameraOn ? "📹 关闭摄像头" : "📷 开启摄像头"}</button>
         <button className={rtc.micOn ? "active" : ""} onClick={() => void rtc.toggleMic()}>{rtc.micOn ? "🎙️ 关闭麦克风" : "🎤 开启麦克风"}</button>
+        <button className={rtc.screenSharing ? "active" : ""} onClick={() => void rtc.toggleScreenShare()}>{rtc.screenSharing ? "🖥️ 停止共享" : "🖥️ 共享屏幕"}</button>
+        <button className={rtc.recording ? "active danger-mini" : ""} onClick={() => {
+          void (async () => {
+            if (rtc.recording) {
+              await rtc.stopRecording();
+              onRecordingNotice(false);
+            } else if (await rtc.startRecording()) {
+              onRecordingNotice(true);
+            }
+          })();
+        }}>{rtc.recording ? "⏹ 停止录制" : "⏺ 本地录制"}</button>
       </div>
       <div className="virtual-bg-controls">
         <label className={rtc.virtualBackgroundUrl ? "active" : ""}>🖼️ 选择虚拟背景<input hidden type="file" accept="image/*" onChange={chooseBackground} /></label>
         <button type="button" disabled={!rtc.virtualBackgroundUrl} onClick={() => void clearBackground()}>清除背景</button>
         <small>{rtc.virtualBackgroundUrl ? `已选择：${backgroundName || "自选图片"}` : "对方会看到自选背景画布 + 摄像头画面"}</small>
       </div>
-      <small className="rtc-privacy">🔒 仅用于本次课堂通话，不录音录像</small>
+      <small className="rtc-privacy">🔒 摄像头/麦克风仅用于课堂；录制为教师端本地文件，请先取得家长授权</small>
+      {rtc.recordingUrl && <a className="recording-link" href={rtc.recordingUrl} download={`classroom-recording-${Date.now()}.webm`}>下载本地录制</a>}
       {rtc.error && <div className="teacher-rtc-error">⚠ {rtc.error}</div>}
     </div>
   );
 }
 
-function TeacherPomodoroPanel({ minutes, setMinutes, pomodoro, remainingSeconds, doneCount, total, onStart, onPause, onResume, onStop, onFinish }: {
+function TeacherPomodoroPanel({ minutes, setMinutes, breakMinutes, setBreakMinutes, pomodoro, remainingSeconds, doneCount, total, onStart, onPause, onResume, onStop, onFinish, onBreak, onRecall }: {
   minutes: number;
   setMinutes(value: number): void;
+  breakMinutes: number;
+  setBreakMinutes(value: number): void;
   pomodoro: PomodoroPayload | null;
   remainingSeconds: number;
   doneCount: number;
@@ -495,19 +536,95 @@ function TeacherPomodoroPanel({ minutes, setMinutes, pomodoro, remainingSeconds,
   onResume(): void;
   onStop(): void;
   onFinish(): void;
+  onBreak(): void;
+  onRecall(): void;
 }) {
   const status = pomodoro?.status ?? "stopped";
   return (
     <div className={`pomodoro-panel ${status}`}>
-      <div className="pomodoro-clock"><span>🍅</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注中" : status === "paused" ? "已暂停" : status === "completed" ? "已完成" : "未开始"}</small></div>
+      <div className="pomodoro-clock"><span>{status === "break" ? "☕" : "🍅"}</span><b>{formatSeconds(remainingSeconds)}</b><small>{status === "running" ? "专注中" : status === "paused" ? "已暂停" : status === "completed" ? "已完成" : status === "break" ? "休息中" : "未开始"}</small></div>
       <label>时长（分钟）<input type="number" min="1" max="120" value={minutes} disabled={status === "running"} onChange={(event) => setMinutes(clampNumber(Number(event.target.value), 1, 120))} /></label>
+      <label>休息（分钟）<input type="number" min="1" max="30" value={breakMinutes} disabled={status === "break"} onChange={(event) => setBreakMinutes(clampNumber(Number(event.target.value), 1, 30))} /></label>
       <div className="pomodoro-actions">
         <button onClick={onStart}>开始</button>
         <button onClick={status === "paused" ? onResume : onPause} disabled={!pomodoro || status === "stopped" || status === "completed"}>{status === "paused" ? "继续" : "暂停"}</button>
         <button onClick={onFinish} disabled={!pomodoro || status === "completed" || status === "stopped"}>完成</button>
         <button onClick={onStop} disabled={!pomodoro || status === "stopped"}>停止</button>
+        <button onClick={onBreak}>开始休息</button>
+        <button onClick={onRecall}>休息结束召回</button>
       </div>
       <p>{doneCount}/{total} 名学生已提前完成并举手。</p>
+    </div>
+  );
+}
+
+function ClassroomControlConsole({
+  total, onlineCount, hiddenCount, idleCount, offlineCount, alertStudents, helpQueue, privateMessages,
+  selectedName, onMuteAll, onCameraOffAll, onMuteSelected, onCameraOffSelected, onRequestCameraSelected,
+  onUnmuteSelected, onRenameSelected, onOpenHelpRoom, onCloseHelpRoom, privateReply, setPrivateReply, onSendPrivateReply
+}: {
+  total: number;
+  onlineCount: number;
+  hiddenCount: number;
+  idleCount: number;
+  offlineCount: number;
+  alertStudents: User[];
+  helpQueue: HelpTicket[];
+  privateMessages: PrivateMessage[];
+  selectedName: string;
+  onMuteAll(): void;
+  onCameraOffAll(): void;
+  onMuteSelected(): void;
+  onCameraOffSelected(): void;
+  onRequestCameraSelected(): void;
+  onUnmuteSelected(): void;
+  onRenameSelected(): void;
+  onOpenHelpRoom(ticket?: HelpTicket): void;
+  onCloseHelpRoom(): void;
+  privateReply: string;
+  setPrivateReply(value: string): void;
+  onSendPrivateReply(): void;
+}) {
+  const pending = helpQueue.filter(({ status }) => status === "pending");
+  const active = helpQueue.find(({ status }) => status === "active");
+  const recentMessages = privateMessages.slice(-4).reverse();
+  return (
+    <div className="control-console">
+      <div className="console-kpis">
+        <span><b>{total}</b><small>学员</small></span>
+        <span className="ok"><b>{onlineCount}</b><small>在线</small></span>
+        <span className="warn"><b>{hiddenCount}</b><small>离席</small></span>
+        <span className="warn"><b>{idleCount}</b><small>无操作</small></span>
+        <span className="bad"><b>{offlineCount}</b><small>掉线</small></span>
+      </div>
+      <div className="console-alerts">
+        <b>异常告警</b>
+        {alertStudents.length ? alertStudents.slice(0, 6).map((student) => <span key={student.id}>⚠ {student.name}</span>) : <small>当前无异常</small>}
+      </div>
+      <div className="console-actions">
+        <button onClick={onMuteAll}>全体静音</button>
+        <button onClick={onCameraOffAll}>全体关摄像头</button>
+        <button onClick={onMuteSelected} disabled={!selectedName}>静音 {selectedName || "学生"}</button>
+        <button onClick={onUnmuteSelected} disabled={!selectedName}>允许开麦</button>
+        <button onClick={onCameraOffSelected} disabled={!selectedName}>关摄像头</button>
+        <button onClick={onRequestCameraSelected} disabled={!selectedName}>请求开摄像头</button>
+        <button onClick={onRenameSelected} disabled={!selectedName}>改名</button>
+      </div>
+      <div className="help-queue">
+        <div className="mini-heading"><b>举手求助队列</b><small>{pending.length} 个待处理</small></div>
+        {active && <div className="active-help"><span>正在答疑：{active.studentName}</span><button onClick={onCloseHelpRoom}>完成答疑</button></div>}
+        {pending.map((ticket, index) => (
+          <button key={ticket.id} onClick={() => onOpenHelpRoom(ticket)}>
+            <span>#{index + 1}</span><b>{ticket.studentName}</b><small>{Math.max(1, Math.round((Date.now() - ticket.createdAt) / 60000))} 分钟前</small>
+          </button>
+        ))}
+        {!pending.length && !active && <small>没有待处理举手。</small>}
+      </div>
+      <div className="private-inbox">
+        <div className="mini-heading"><b>老师私信</b><small>学生不能互相聊天</small></div>
+        {recentMessages.map((message) => <p key={message.id} className={message.from}><b>{message.from === "teacher" ? "我" : message.studentName}：</b>{message.message}</p>)}
+        <div className="private-reply"><input value={privateReply} placeholder={selectedName ? `回复 ${selectedName}` : "选择学生后回复"} onChange={(event) => setPrivateReply(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") onSendPrivateReply(); }} /><button onClick={onSendPrivateReply}>发送</button></div>
+      </div>
     </div>
   );
 }
@@ -538,12 +655,16 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const user = session.user!;
   const { language, setLanguage } = useLanguageState();
   const socketRef = useRef<Socket | null>(null);
+  const studentNamesRef = useRef<Record<string, string>>({});
   const [room, setRoom] = useState<Classroom | null>(null);
   const [incoming, setIncoming] = useState<SignalMessage | null>(null);
   const [rtcMessages, setRtcMessages] = useState<SignalMessage<RTCSignalPayload>[]>([]);
   const [rtcReadyKey, setRtcReadyKey] = useState(0);
   const [page, setPage] = useState(1);
-  const [online, setOnline] = useState<Record<string, "online" | "hidden" | "offline">>({});
+  const [online, setOnline] = useState<Record<string, StudentPresence>>({});
+  const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
+  const [mediaStates, setMediaStates] = useState<Record<string, { micOn?: boolean; cameraOn?: boolean }>>({});
+  const [displayNames, setDisplayNames] = useState<Record<string, string>>({});
   const [courseware, setCourseware] = useState<Courseware[]>([]);
   const [selectedCourseware, setSelectedCourseware] = useState<Courseware | null>(null);
   const [notice, setNotice] = useState("");
@@ -553,10 +674,15 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   const [tasks, setTasks] = useState<LearningTask[]>([]);
   const [classroomPraise, setClassroomPraise] = useState<ClassroomPraisePayload | null>(null);
   const [pomodoroMinutes, setPomodoroMinutes] = useState(25);
+  const [breakMinutes, setBreakMinutes] = useState(5);
   const [pomodoro, setPomodoro] = useState<PomodoroPayload | null>(null);
   const [pomodoroDone, setPomodoroDone] = useState<Record<string, boolean>>({});
   const [timerNow, setTimerNow] = useState(Date.now());
   const [finishBroadcasted, setFinishBroadcasted] = useState(false);
+  const [helpQueue, setHelpQueue] = useState<HelpTicket[]>([]);
+  const [privateMessages, setPrivateMessages] = useState<PrivateMessage[]>([]);
+  const [privateReply, setPrivateReply] = useState("");
+  const [answeringStudentId, setAnsweringStudentId] = useState("");
   useEffect(() => {
     if (!studentEmoji) return;
     const timer = setTimeout(() => setStudentEmoji(null), 2200);
@@ -566,13 +692,35 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     const timer = setInterval(() => setTimerNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setOnline((current) => {
+        const next = { ...current };
+        for (const { student } of room?.students ?? []) {
+          const seenAt = lastSeen[student.id];
+          if (seenAt && now - seenAt > 2 * 60 * 1000 && next[student.id] === "online") next[student.id] = "idle";
+        }
+        return next;
+      });
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, [lastSeen, room?.students]);
 
   const classroomStudents = useMemo(() => room?.students.map(({ student }) => student) ?? [], [room]);
   const selectedTarget = classroomStudents.find(({ id }) => id === selectedStudentId) ?? classroomStudents[0];
+  const selectedTargetName = selectedTarget ? displayNames[selectedTarget.id] ?? selectedTarget.name : "";
   const tasksForSelectedTarget = useMemo(
     () => tasks.filter((task) => task.studentId === selectedTarget?.id),
     [tasks, selectedTarget?.id]
   );
+  const pendingHelp = helpQueue.filter(({ status }) => status === "pending");
+  const activeHelp = helpQueue.find(({ status }) => status === "active");
+  const alertStudents = classroomStudents.filter((student) => ["hidden", "idle", "offline"].includes(online[student.id] ?? "offline"));
+  const onlineCount = classroomStudents.filter((student) => (online[student.id] ?? "offline") === "online").length;
+  const hiddenCount = classroomStudents.filter((student) => (online[student.id] ?? "offline") === "hidden").length;
+  const idleCount = classroomStudents.filter((student) => (online[student.id] ?? "offline") === "idle").length;
+  const offlineCount = classroomStudents.length - onlineCount - hiddenCount - idleCount;
   const pomodoroRemaining = remainingPomodoroSeconds(pomodoro, timerNow);
   const visiblePomodoro = pomodoro && pomodoro.status === "running" && pomodoroRemaining <= 0
     ? { ...pomodoro, status: "completed" as const, remainingSeconds: 0 }
@@ -582,6 +730,9 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     if (!firstStudent) return;
     if (!classroomStudents.some(({ id }) => id === selectedStudentId)) setSelectedStudentId(firstStudent.id);
   }, [classroomStudents, selectedStudentId]);
+  useEffect(() => {
+    studentNamesRef.current = Object.fromEntries(classroomStudents.map((student) => [student.id, displayNames[student.id] ?? student.name]));
+  }, [classroomStudents, displayNames]);
 
   const sendRTC = useCallback((action: RTCAction, payload: RTCSignalPayload, targetUid?: string) => {
     const socket = socketRef.current;
@@ -659,16 +810,30 @@ function ClassroomPage({ roomId }: { roomId: string }) {
         setRtcMessages((current) => [...current.slice(-160), message as SignalMessage<RTCSignalPayload>]);
       }
       if (message.msg_type === "STUDENT_STATUS") {
-        setOnline((current) => ({
-          ...current,
-          [message.from_uid]: message.action === "PAGE_HIDDEN" ? "hidden" : "online"
-        }));
+        setLastSeen((current) => ({ ...current, [message.from_uid]: Date.now() }));
+        if (message.action === "CAMERA_ON" || message.action === "CAMERA_OFF") {
+          setMediaStates((current) => ({
+            ...current,
+            [message.from_uid]: { ...current[message.from_uid], cameraOn: message.action === "CAMERA_ON" }
+          }));
+        } else if (message.action === "MIC_ON" || message.action === "MIC_OFF") {
+          setMediaStates((current) => ({
+            ...current,
+            [message.from_uid]: { ...current[message.from_uid], micOn: message.action === "MIC_ON" }
+          }));
+        } else {
+          setOnline((current) => ({
+            ...current,
+            [message.from_uid]: message.action === "PAGE_HIDDEN" ? "hidden" : message.action === "IDLE" ? "idle" : "online"
+          }));
+        }
       }
       if (message.msg_type === "ROOM_EVENT") {
         setOnline((current) => ({
           ...current,
           [message.from_uid]: message.action === "USER_OFFLINE" ? "offline" : "online"
         }));
+        if (message.action !== "USER_OFFLINE") setLastSeen((current) => ({ ...current, [message.from_uid]: Date.now() }));
         if (message.action === "JOIN_ROOM" || message.action === "USER_ONLINE") {
           refreshRoomRoster();
           setRtcReadyKey((value) => value + 1);
@@ -678,6 +843,23 @@ function ClassroomPage({ roomId }: { roomId: string }) {
         const payload = message.payload as unknown as StudentInteractionPayload;
         if (message.action === "RAISE_HAND" || message.action === "LOWER_HAND") {
           setRaisedHands((current) => ({ ...current, [message.from_uid]: message.action === "RAISE_HAND" }));
+          setHelpQueue((current) => {
+            const existing = current.find((item) => item.studentId === message.from_uid && item.status !== "resolved" && item.status !== "cancelled");
+            if (message.action === "LOWER_HAND") {
+              return current.map((item) => item.studentId === message.from_uid && item.status === "pending"
+                ? { ...item, status: "cancelled" }
+                : item);
+            }
+            if (existing) return current;
+            return [...current, {
+              id: message.msg_id,
+              studentId: message.from_uid,
+              studentName: studentNamesRef.current[message.from_uid] ?? "学生",
+              createdAt: Date.now(),
+              status: "pending",
+              message: payload.message
+            }];
+          });
           setNotice(message.action === "RAISE_HAND" ? "学生举手了 ✋" : "学生已放下手");
         }
         if (message.action === "POMODORO_FINISHED_EARLY") {
@@ -688,6 +870,17 @@ function ClassroomPage({ roomId }: { roomId: string }) {
         if (message.action === "SEND_EMOJI" && payload.emoji) {
           setStudentEmoji({ uid: message.from_uid, emoji: payload.emoji, id: Date.now() });
           setNotice(`学生发送了 ${payload.emoji}`);
+        }
+        if (message.action === "PRIVATE_MESSAGE" && payload.message) {
+          setPrivateMessages((current) => [...current.slice(-80), {
+            id: message.msg_id,
+            studentId: message.from_uid,
+            studentName: studentNamesRef.current[message.from_uid] ?? "学生",
+            message: payload.message ?? "",
+            createdAt: Date.now(),
+            from: "student"
+          }]);
+          setNotice("收到学生私信");
         }
       }
       if (message.msg_type === "CLASSROOM_PRAISE") {
@@ -755,9 +948,94 @@ function ClassroomPage({ roomId }: { roomId: string }) {
     }, selectedTarget.id));
     setNotice(`已提醒 ${selectedTarget.name} 专注`);
   };
+  const teacherControl = (action: SignalMessage["action"], payload: Record<string, unknown> = {}, targetUid?: string) =>
+    emit(makeSignal("TEACHER_CONTROL", action, payload, targetUid));
+  const recordingNotice = (active: boolean) => {
+    void teacherControl(active ? "START_RECORDING_NOTICE" : "STOP_RECORDING_NOTICE", {
+      message: active
+        ? "老师已开始课堂本地录制。本功能只记录课堂画面和声音，请确认已获得家长授权。"
+        : "老师已停止课堂本地录制。"
+    });
+    setNotice(active ? "已通知全班开始录制" : "已通知全班停止录制");
+  };
+  const muteAll = async () => {
+    if (await teacherControl("MUTE_ALL", { message: "老师已开启全体静音，保持课堂安静。" })) {
+      setMediaStates((current) => Object.fromEntries(classroomStudents.map((student) => [student.id, { ...current[student.id], micOn: false }])));
+      setNotice("已发送全体静音");
+    }
+  };
+  const cameraOffAll = async () => {
+    if (await teacherControl("CAMERA_OFF_ALL", { message: "老师已关闭学生摄像头，请专注学习内容。" })) {
+      setMediaStates((current) => Object.fromEntries(classroomStudents.map((student) => [student.id, { ...current[student.id], cameraOn: false }])));
+      setNotice("已发送全体关闭摄像头");
+    }
+  };
+  const muteSelected = async () => {
+    if (!selectedTarget) return;
+    if (await teacherControl("MUTE_STUDENT", { message: "老师已将你静音，如需帮助可以私信老师。" }, selectedTarget.id)) {
+      setMediaStates((current) => ({ ...current, [selectedTarget.id]: { ...current[selectedTarget.id], micOn: false } }));
+      setNotice(`已静音 ${selectedTargetName}`);
+    }
+  };
+  const unmuteSelected = async () => {
+    if (!selectedTarget) return;
+    if (await teacherControl("UNMUTE_STUDENT", { message: "老师已允许你打开麦克风，需要发言时可以点击麦克风。" }, selectedTarget.id)) {
+      setMediaStates((current) => ({ ...current, [selectedTarget.id]: { ...current[selectedTarget.id], micOn: undefined } }));
+      setNotice(`已允许 ${selectedTargetName} 开麦`);
+    }
+  };
+  const cameraOffSelected = async () => {
+    if (!selectedTarget) return;
+    if (await teacherControl("CAMERA_OFF_STUDENT", { message: "老师已关闭你的摄像头，请继续看学习内容。" }, selectedTarget.id)) {
+      setMediaStates((current) => ({ ...current, [selectedTarget.id]: { ...current[selectedTarget.id], cameraOn: false } }));
+      setNotice(`已关闭 ${selectedTargetName} 的摄像头`);
+    }
+  };
+  const requestCameraSelected = async () => {
+    if (!selectedTarget) return;
+    if (await teacherControl("CAMERA_ON_REQUEST", { message: "老师希望你打开摄像头，确认后请点击摄像头按钮。" }, selectedTarget.id)) setNotice(`已请求 ${selectedTargetName} 打开摄像头`);
+  };
+  const renameSelected = async () => {
+    if (!selectedTarget) return;
+    const displayName = window.prompt("请输入课堂显示名称", selectedTargetName || selectedTarget.name)?.trim();
+    if (!displayName) return;
+    setDisplayNames((current) => ({ ...current, [selectedTarget.id]: displayName }));
+    if (await teacherControl("RENAME_PARTICIPANT", { user_id: selectedTarget.id, display_name: displayName })) setNotice(`已将 ${selectedTarget.name} 改名为 ${displayName}`);
+  };
+  const openHelpRoom = async (ticket?: HelpTicket) => {
+    const targetId = ticket?.studentId ?? selectedTarget?.id;
+    if (!targetId) return;
+    const targetName = ticket?.studentName ?? selectedTargetName;
+    setAnsweringStudentId(targetId);
+    setHelpQueue((current) => current.map((item) => item.studentId === targetId && item.status !== "resolved"
+      ? { ...item, status: "active" }
+      : item));
+    if (await teacherControl("OPEN_HELP_ROOM", { help_room_id: `help-${roomId}-${targetId}`, message: "老师正在单独答疑，你可以私信老师，不会打扰全班。" }, targetId)) {
+      setNotice(`已接入 ${targetName} 的单人答疑`);
+    }
+  };
+  const closeHelpRoom = async () => {
+    const targetId = answeringStudentId || activeHelp?.studentId;
+    if (!targetId) return;
+    setHelpQueue((current) => current.map((item) => item.studentId === targetId && item.status === "active"
+      ? { ...item, status: "resolved" }
+      : item));
+    setRaisedHands((current) => ({ ...current, [targetId]: false }));
+    setAnsweringStudentId("");
+    if (await teacherControl("CLOSE_HELP_ROOM", { message: "本次单人答疑已完成，请继续跟上全班学习。" }, targetId)) setNotice("已完成本次答疑");
+  };
+  const sendPrivateReply = async () => {
+    const targetId = answeringStudentId || selectedTarget?.id;
+    if (!targetId || !privateReply.trim()) return;
+    const targetName = studentNamesRef.current[targetId] ?? "学生";
+    const text = privateReply.trim();
+    setPrivateReply("");
+    setPrivateMessages((current) => [...current.slice(-80), { id: crypto.randomUUID(), studentId: targetId, studentName: targetName, message: text, createdAt: Date.now(), from: "teacher" }]);
+    if (await teacherControl("PRIVATE_TEACHER_REPLY", { message: text }, targetId)) setNotice(`已私信 ${targetName}`);
+  };
   const sendPomodoro = (action: SignalMessage["action"], payload: PomodoroPayload) => {
     setPomodoro(payload);
-    if (action === "START_POMODORO" || action === "RESUME_POMODORO") setFinishBroadcasted(false);
+    if (action === "START_POMODORO" || action === "RESUME_POMODORO" || action === "START_BREAK_TIMER") setFinishBroadcasted(false);
     if (action === "START_POMODORO") setPomodoroDone({});
     void emit(makeSignal("POMODORO_CONTROL", action, payload));
   };
@@ -813,8 +1091,37 @@ function ClassroomPage({ roomId }: { roomId: string }) {
       endsAt: Date.now()
     });
   };
+  const startBreakTimer = () => {
+    const durationSeconds = Math.round(clampNumber(breakMinutes, 1, 30) * 60);
+    const startedAt = Date.now();
+    sendPomodoro("START_BREAK_TIMER", {
+      status: "break",
+      durationSeconds,
+      startedAt,
+      endsAt: startedAt + durationSeconds * 1000,
+      remainingSeconds: durationSeconds,
+      label: "课堂休息"
+    });
+    setNotice("已开始全班休息");
+  };
+  const recallStudents = () => {
+    const payload: PomodoroPayload = {
+      status: "stopped",
+      durationSeconds: 0,
+      remainingSeconds: 0,
+      label: "休息结束，请回到学习状态"
+    };
+    sendPomodoro("RECALL_STUDENTS", payload);
+    setNotice("已召回学生回到学习状态");
+  };
   useEffect(() => {
-    if (!pomodoro || pomodoro.status !== "running" || pomodoroRemaining > 0 || finishBroadcasted) return;
+    if (!pomodoro || pomodoroRemaining > 0 || finishBroadcasted) return;
+    if (pomodoro.status === "break") {
+      setFinishBroadcasted(true);
+      recallStudents();
+      return;
+    }
+    if (pomodoro.status !== "running") return;
     setFinishBroadcasted(true);
     finishPomodoro();
   }, [pomodoro, pomodoroRemaining, finishBroadcasted]);
@@ -883,6 +1190,32 @@ function ClassroomPage({ roomId }: { roomId: string }) {
           </section>
           <aside className="classroom-aside">
             <div className="aside-block">
+              <div className="aside-heading"><b>20 人课堂控制台</b><small>状态聚合 · 告警 · 求助队列</small></div>
+              <ClassroomControlConsole
+                total={classroomStudents.length}
+                onlineCount={onlineCount}
+                hiddenCount={hiddenCount}
+                idleCount={idleCount}
+                offlineCount={offlineCount}
+                alertStudents={alertStudents}
+                helpQueue={helpQueue}
+                privateMessages={privateMessages}
+                selectedName={selectedTargetName}
+                onMuteAll={() => void muteAll()}
+                onCameraOffAll={() => void cameraOffAll()}
+                onMuteSelected={() => void muteSelected()}
+                onUnmuteSelected={() => void unmuteSelected()}
+                onCameraOffSelected={() => void cameraOffSelected()}
+                onRequestCameraSelected={() => void requestCameraSelected()}
+                onRenameSelected={() => void renameSelected()}
+                onOpenHelpRoom={(ticket) => void openHelpRoom(ticket)}
+                onCloseHelpRoom={() => void closeHelpRoom()}
+                privateReply={privateReply}
+                setPrivateReply={setPrivateReply}
+                onSendPrivateReply={() => void sendPrivateReply()}
+              />
+            </div>
+            <div className="aside-block">
               <div className="aside-heading"><b>课堂成员视频</b><span>{classroomStudents.length + 1} 人</span></div>
               <div className="teacher-video-card">
                 <VideoTile label={`${user.name}（我）`} source="local" muted />
@@ -893,12 +1226,14 @@ function ClassroomPage({ roomId }: { roomId: string }) {
                   <TeacherVideoPanel
                     key={student.id}
                     studentId={student.id}
-                    studentName={student.name}
+                    studentName={displayNames[student.id] ?? student.name}
                     selected={selectedTarget?.id === student.id}
                     onSelect={() => setSelectedStudentId(student.id)}
                     studentState={online[student.id] ?? "offline"}
                     handRaised={raisedHands[student.id]}
                     pomodoroDone={pomodoroDone[student.id]}
+                    muted={mediaStates[student.id]?.micOn === false}
+                    cameraOff={mediaStates[student.id]?.cameraOn === false}
                     emoji={studentEmoji?.uid === student.id ? studentEmoji.emoji : undefined}
                     emojiKey={studentEmoji?.id}
                   />
@@ -908,13 +1243,15 @@ function ClassroomPage({ roomId }: { roomId: string }) {
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>我的音视频</b><small>老师画面</small></div>
-              <TeacherRTCControls />
+              <TeacherRTCControls onRecordingNotice={recordingNotice} />
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>课堂番茄钟</b><small>教师统一控制</small></div>
               <TeacherPomodoroPanel
                 minutes={pomodoroMinutes}
                 setMinutes={setPomodoroMinutes}
+                breakMinutes={breakMinutes}
+                setBreakMinutes={setBreakMinutes}
                 pomodoro={visiblePomodoro}
                 remainingSeconds={pomodoroRemaining}
                 doneCount={Object.values(pomodoroDone).filter(Boolean).length}
@@ -924,12 +1261,14 @@ function ClassroomPage({ roomId }: { roomId: string }) {
                 onResume={resumePomodoro}
                 onStop={stopPomodoro}
                 onFinish={finishPomodoro}
+                onBreak={startBreakTimer}
+                onRecall={recallStudents}
               />
             </div>
             <div className="aside-block">
               <div className="aside-heading"><b>即时鼓励</b><small>发送给选中学生</small></div>
               <select className="target-select" value={selectedTarget?.id ?? ""} onChange={(event) => setSelectedStudentId(event.target.value)}>
-                {classroomStudents.map((student) => <option key={student.id} value={student.id}>{student.name}</option>)}
+                {classroomStudents.map((student) => <option key={student.id} value={student.id}>{displayNames[student.id] ?? student.name}</option>)}
               </select>
               <div className="reward-grid">
                 <button onClick={() => reward("red_flower", "你真棒！继续加油！")}><span>🌸</span>小红花</button>
@@ -938,7 +1277,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
                 <button onClick={() => reward("star_rain", "每一颗星星都为你闪亮！")}><span>⭐</span>星星雨</button>
               </div>
             </div>
-            <div className="aside-block focus-block"><div><span>🎯</span><b>专注提醒</b><small>发送给 {selectedTarget?.name ?? "选中学生"}</small></div><Button onClick={focus} disabled={!selectedTarget}>发送提醒</Button></div>
+            <div className="aside-block focus-block"><div><span>🎯</span><b>专注提醒</b><small>发送给 {selectedTargetName || "选中学生"}</small></div><Button onClick={focus} disabled={!selectedTarget}>发送提醒</Button></div>
             <div className="aside-block task-praise-block">
               <div className="aside-heading"><b>任务表扬</b><small>全课堂可见</small></div>
               <p>老师确认完成后，所有学生都会看到表扬特效。</p>

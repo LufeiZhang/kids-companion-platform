@@ -62,7 +62,7 @@ export interface LearningTask {
   student?: Pick<User, "id" | "name" | "email">;
 }
 
-export type PomodoroStatus = "running" | "paused" | "stopped" | "completed";
+export type PomodoroStatus = "running" | "paused" | "stopped" | "completed" | "break";
 
 export interface PomodoroPayload {
   status: PomodoroStatus;
@@ -150,24 +150,29 @@ export const MESSAGE_ACTIONS = {
   ],
   TEACHER_CONTROL: [
     "GRANT_REWARD", "FOCUS_REMINDER", "START_BREAK", "END_BREAK",
-    "LOCK_STUDY_MODE", "UNLOCK_STUDY_MODE"
+    "LOCK_STUDY_MODE", "UNLOCK_STUDY_MODE",
+    "MUTE_STUDENT", "UNMUTE_STUDENT", "MUTE_ALL",
+    "CAMERA_OFF_STUDENT", "CAMERA_OFF_ALL", "CAMERA_ON_REQUEST",
+    "RENAME_PARTICIPANT", "OPEN_HELP_ROOM", "CLOSE_HELP_ROOM",
+    "PRIVATE_TEACHER_REPLY", "START_RECORDING_NOTICE", "STOP_RECORDING_NOTICE"
   ],
   STUDENT_STATUS: [
     "PAGE_VISIBLE", "PAGE_HIDDEN", "IDLE", "ACTIVE",
-    "CAMERA_ON", "CAMERA_OFF", "MIC_ON", "MIC_OFF"
+    "CAMERA_ON", "CAMERA_OFF", "MIC_ON", "MIC_OFF",
+    "SPEAKING", "QUIET"
   ],
   RTC_SIGNAL: [
     "RTC_READY", "RTC_OFFER", "RTC_ANSWER", "ICE_CANDIDATE"
   ],
   STUDENT_INTERACTION: [
-    "RAISE_HAND", "LOWER_HAND", "SEND_EMOJI", "POMODORO_FINISHED_EARLY"
+    "RAISE_HAND", "LOWER_HAND", "SEND_EMOJI", "POMODORO_FINISHED_EARLY", "PRIVATE_MESSAGE"
   ],
   CLASSROOM_PRAISE: [
     "TASK_COMPLETED_PRAISE"
   ],
   POMODORO_CONTROL: [
     "START_POMODORO", "PAUSE_POMODORO", "RESUME_POMODORO",
-    "STOP_POMODORO", "FINISH_POMODORO"
+    "STOP_POMODORO", "FINISH_POMODORO", "START_BREAK_TIMER", "END_BREAK_TIMER", "RECALL_STUDENTS"
   ]
 } as const;
 
@@ -231,6 +236,10 @@ export interface StudentInteractionPayload {
   emoji?: string;
   finished_early?: boolean;
   remainingSeconds?: number;
+  message?: string;
+  display_name?: string;
+  help_room_id?: string;
+  reason?: string;
 }
 
 export interface SignalMessage<T = Record<string, unknown>> {
