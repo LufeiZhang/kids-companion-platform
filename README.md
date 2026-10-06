@@ -187,4 +187,6 @@ TRTC_SIG_EXPIRE_SECONDS=86400
 
 启用线上腾讯 TRTC：在 Render Web Service 的 **Environment** 中新增 `VITE_RTC_PROVIDER=trtc`、`TRTC_SDK_APP_ID`、`TRTC_SECRET_KEY`，然后重新部署。没有配置这三项时，线上仍使用默认 WebRTC。
 
+Render 部署时 `buildCommand` 只负责安装依赖和构建代码；`startCommand` 会先执行 `npm run db:push && npm run db:seed` 再启动服务。这样可以避免 build 阶段无法访问 Render 内部 PostgreSQL 地址导致 `P1001: Can't reach database server`。
+
 免费 Web Service 闲置后会休眠，首次打开可能需要等待唤醒；免费 PostgreSQL 当前为临时方案，请勿存放真实儿童数据。生产环境应升级持久数据库和对象存储。

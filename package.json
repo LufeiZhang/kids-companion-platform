@@ -19,7 +19,8 @@
     "db:generate": "npm run db:generate -w @companion/server",
     "db:migrate": "npm run db:migrate -w @companion/server",
     "db:push": "npm run db:push -w @companion/server",
-    "db:seed": "npm run db:seed -w @companion/server"
+    "db:seed": "npm run db:seed -w @companion/server",
+    "render:start": "npm run db:push && npm run db:seed && npm run start -w @companion/server"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

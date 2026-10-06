@@ -4,8 +4,8 @@ services:
     runtime: node
     plan: free
     region: singapore
-    buildCommand: npm install && npm run db:generate && npm run build && npm run db:push && npm run db:seed
-    startCommand: npm run start -w @companion/server
+    buildCommand: npm install && npm run db:generate && npm run build
+    startCommand: npm run render:start
     healthCheckPath: /health
     envVars:
       - key: NODE_VERSION
