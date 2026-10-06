@@ -12,6 +12,7 @@ import { coursewareRouter } from "./courseware/routes.js";
 import { logsRouter } from "./logs/routes.js";
 import { tasksRouter } from "./tasks/routes.js";
 import { aiRouter } from "./ai/routes.js";
+import { rtcRouter } from "./rtc/routes.js";
 import { createSocketGateway } from "./websocket/gateway.js";
 import { prisma } from "./database/client.js";
 
@@ -42,6 +43,7 @@ app.use("/api/courseware", coursewareRouter);
 app.use("/api/logs", logsRouter);
 app.use("/api/tasks", tasksRouter);
 app.use("/api/ai", aiRouter);
+app.use("/api/rtc", rtcRouter);
 
 const workspaceRoot = path.basename(process.cwd()) === "server" ? path.resolve("..") : process.cwd();
 const frontends = [

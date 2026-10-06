@@ -13,9 +13,9 @@
 - 学生 `visibilitychange` 状态上报，教师端离开页面提醒
 - 教师布置学习任务并确认完成，学生端只读查看进度
 - PostgreSQL + Prisma 持久化用户、房间、白板事件、信令、奖励与审计日志
-- 浏览器摄像头/麦克风、本地预览和 WebRTC 点对点音视频
+- 浏览器摄像头/麦克风、本地预览和 WebRTC 点对点音视频；可通过配置切换到腾讯 TRTC
 - 真实 AI 能力：配置 `OPENAI_API_KEY` 后，课堂结束/刷新记录会调用 OpenAI 生成总结；学生端可使用 AI 陪练助手练习单词、口算、绘本复述、错题问答和学习提问；未配置或调用失败时自动回退安全提示
-- RTCProvider 抽象，后续可替换为 Agora/TRTC
+- RTCProvider 抽象，已预留并实现腾讯 TRTC Provider，后续仍可替换为 Agora/WebRTC/Tencent TRTC 深度能力
 - 管理后台账号、学生分组、教师分配、课堂/奖励/信令/审计记录
 
 ## 项目结构
@@ -150,6 +150,23 @@ AI_PRIVACY_MODE="strict"
 Socket.IO 通道交换 Offer、Answer 和 ICE。MVP 使用公共 STUN；跨严格 NAT 的生产环境
 应增加 TURN，或在 `packages/rtc` 接入 Agora/TRTC，无需修改白板业务。
 
+### 接入腾讯 TRTC
+
+项目已内置可切换的 TRTC Provider。默认仍是 `VITE_RTC_PROVIDER="webrtc"`；拿到腾讯云 TRTC 应用的 `SDKAppID` 和 `SecretKey` 后，改成：
+
+```env
+VITE_RTC_PROVIDER="trtc"
+TRTC_SDK_APP_ID="你的 SDKAppID"
+TRTC_SECRET_KEY="你的 SecretKey"
+TRTC_SIG_EXPIRE_SECONDS=86400
+```
+
+实现方式：
+
+- 服务端 `GET /api/rtc/trtc-token?roomId=...` 校验当前登录用户是否属于课堂，再用 `TRTC_SECRET_KEY` 签发 UserSig；SecretKey 只保存在服务端。
+- 前端 `packages/rtc` 会在 `VITE_RTC_PROVIDER=trtc` 时使用 `trtc-sdk-v5` 进房、发布摄像头/麦克风、订阅远端视频，并复用现有 `VideoTile` 渲染所有成员。
+- 屏幕共享会调用 TRTC 的 `startScreenShare`，并尽量带上系统音频；本地录制仍是浏览器端 `MediaRecorder` Demo，生产录课建议接腾讯云端录制。
+
 ## 部署到 Render
 
 仓库根目录提供了 `render.yaml`。Render Blueprint 会创建一项 Node Web Service 和一项 PostgreSQL 数据库，并自动建表、写入演示账号。部署后使用同一个公网域名：
@@ -167,5 +184,7 @@ Socket.IO 通道交换 Offer、Answer 和 ICE。MVP 使用公共 STUN；跨严�
 4. 等待数据库和 Web Service 部署完成，打开 Render 提供的 `onrender.com` 地址。
 
 启用线上真实 AI：在 Render Web Service 的 **Environment** 中新增或填写 `OPENAI_API_KEY`，然后重新部署。`AI_MODEL`、`AI_TIMEOUT_MS` 和 `AI_PRIVACY_MODE` 可按需调整。
+
+启用线上腾讯 TRTC：在 Render Web Service 的 **Environment** 中新增 `VITE_RTC_PROVIDER=trtc`、`TRTC_SDK_APP_ID`、`TRTC_SECRET_KEY`，然后重新部署。没有配置这三项时，线上仍使用默认 WebRTC。
 
 免费 Web Service 闲置后会休眠，首次打开可能需要等待唤醒；免费 PostgreSQL 当前为临时方案，请勿存放真实儿童数据。生产环境应升级持久数据库和对象存储。

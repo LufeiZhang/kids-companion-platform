@@ -15,6 +15,17 @@ export interface AuthResponse {
   user: User;
 }
 
+export interface TrtcTokenResponse {
+  provider: "trtc";
+  sdkAppId: number;
+  userId: string;
+  userSig: string;
+  roomId: string;
+  strRoomId: string;
+  expireSeconds: number;
+  expiresAt: string;
+}
+
 export interface Classroom {
   id: string;
   title: string;

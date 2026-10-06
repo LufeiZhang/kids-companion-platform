@@ -2,7 +2,8 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
   type ReactNode
 } from "react";
-import type { RTCAction, RTCSignalPayload, SignalMessage } from "../../types/src/index.js";
+import TRTC from "trtc-sdk-v5";
+import type { RTCAction, RTCSignalPayload, SignalMessage, TrtcTokenResponse } from "../../types/src/index.js";
 
 export interface RTCParticipant {
   uid: string;
@@ -61,6 +62,7 @@ interface RTCContextValue {
 
 interface RTCProviderProps {
   children: ReactNode;
+  roomId?: string;
   selfId?: string;
   teacherId?: string;
   initiator?: boolean;
@@ -250,7 +252,26 @@ async function createVirtualBackgroundTrack(rawTrack: MediaStreamTrack, backgrou
   };
 }
 
-export function RTCProvider({ children, selfId, teacherId, initiator = false, peerIds = [], incoming, readyKey = 0, sendRTC }: RTCProviderProps) {
+function rtcProviderName() {
+  return String(import.meta.env?.VITE_RTC_PROVIDER ?? "webrtc").toLowerCase();
+}
+
+function apiBaseUrl() {
+  return (import.meta.env?.VITE_API_URL as string | undefined)
+    ?? (import.meta.env?.PROD ? window.location.origin : "http://localhost:4000");
+}
+
+async function fetchTrtcToken(roomId: string): Promise<TrtcTokenResponse> {
+  const token = localStorage.getItem("companion_token");
+  const response = await fetch(`${apiBaseUrl()}/api/rtc/trtc-token?roomId=${encodeURIComponent(roomId)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message ?? "腾讯 TRTC 鉴权失败");
+  return body as TrtcTokenResponse;
+}
+
+export function WebRTCProvider({ children, selfId, teacherId, initiator = false, peerIds = [], incoming, readyKey = 0, sendRTC }: RTCProviderProps) {
   const peersRef = useRef<Map<string, PeerBundle>>(new Map());
   const localRef = useRef<MediaStream>(new MediaStream());
   const sendRef = useRef(sendRTC);
@@ -854,6 +875,396 @@ export function RTCProvider({ children, selfId, teacherId, initiator = false, pe
   ]);
 
   return <RTCContext.Provider value={value}>{children}</RTCContext.Provider>;
+}
+
+export function TRTCProvider({ children, roomId, selfId, peerIds = [] }: RTCProviderProps) {
+  const trtcRef = useRef<ReturnType<typeof TRTC.create> | null>(null);
+  const joinedRef = useRef(false);
+  const remoteVideoTypesRef = useRef<Record<string, Set<string>>>({});
+  const rawVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+  const virtualStopRef = useRef<(() => void) | null>(null);
+  const virtualBackgroundRef = useRef<string | null>(null);
+  const screenSharingRef = useRef(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingUrlRef = useRef<string | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [cameraOn, setCameraOn] = useState(false);
+  const [micOn, setMicOn] = useState(false);
+  const [connectionStates, setConnectionStates] = useState<Record<string, RTCPeerConnectionState | "idle">>({});
+  const [error, setError] = useState("");
+  const [virtualBackgroundUrl, setVirtualBackgroundUrl] = useState<string | null>(null);
+  const [screenSharing, setScreenSharing] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const peerIdsKey = useMemo(() => peerIds.filter((id) => id && id !== selfId).sort().join("|"), [peerIds, selfId]);
+
+  useEffect(() => { screenSharingRef.current = screenSharing; }, [screenSharing]);
+
+  const stopVirtualOutput = useCallback(() => {
+    virtualStopRef.current?.();
+    virtualStopRef.current = null;
+  }, []);
+
+  const refreshLocalStream = useCallback(() => {
+    const trtc = trtcRef.current;
+    if (!trtc) {
+      setLocalStream(null);
+      return;
+    }
+    const tracks: MediaStreamTrack[] = [];
+    const localVideoTrack = screenSharingRef.current
+      ? (trtc.getVideoTrack({ streamType: TRTC.TYPE.STREAM_TYPE_SUB }) ?? trtc.getVideoTrack())
+      : trtc.getVideoTrack();
+    const localAudioTrack = screenSharingRef.current
+      ? (trtc.getAudioTrack({ streamType: TRTC.TYPE.STREAM_TYPE_SUB }) ?? trtc.getAudioTrack())
+      : trtc.getAudioTrack();
+    if (localVideoTrack) tracks.push(localVideoTrack);
+    if (localAudioTrack) tracks.push(localAudioTrack);
+    setLocalStream(tracks.length ? new MediaStream(tracks) : null);
+  }, []);
+
+  const refreshRemoteStream = useCallback((userId: string) => {
+    const trtc = trtcRef.current;
+    if (!trtc || !userId) return;
+    const activeTypes = remoteVideoTypesRef.current[userId] ?? new Set<string>();
+    const streamType = activeTypes.has(TRTC.TYPE.STREAM_TYPE_SUB)
+      ? TRTC.TYPE.STREAM_TYPE_SUB
+      : TRTC.TYPE.STREAM_TYPE_MAIN;
+    const videoTrack = activeTypes.size
+      ? trtc.getVideoTrack({ userId, streamType })
+      : null;
+    const audioTrack = trtc.getAudioTrack(userId);
+    const tracks = [videoTrack, audioTrack].filter((track): track is MediaStreamTrack => Boolean(track));
+
+    setRemoteStreams((current) => {
+      if (!tracks.length) {
+        const next = { ...current };
+        delete next[userId];
+        return next;
+      }
+      return { ...current, [userId]: new MediaStream(tracks) };
+    });
+  }, []);
+
+  const subscribeRemoteVideo = useCallback(async (userId: string, streamType: typeof TRTC.TYPE.STREAM_TYPE_MAIN | typeof TRTC.TYPE.STREAM_TYPE_SUB) => {
+    const trtc = trtcRef.current;
+    if (!trtc || !userId) return;
+    const activeTypes = remoteVideoTypesRef.current[userId] ?? new Set<string>();
+    activeTypes.add(streamType);
+    remoteVideoTypesRef.current[userId] = activeTypes;
+    try {
+      await trtc.startRemoteVideo({ userId, streamType, view: null });
+      refreshRemoteStream(userId);
+    } catch (reason) {
+      setError(rtcConnectionMessage(reason));
+    }
+  }, [refreshRemoteStream]);
+
+  useEffect(() => {
+    if (!selfId || !roomId) return;
+    const initialPeerIds = peerIdsKey ? peerIdsKey.split("|") : [];
+    let disposed = false;
+    const trtc = TRTC.create();
+    trtcRef.current = trtc;
+    joinedRef.current = false;
+    setError("");
+    setConnectionStates(Object.fromEntries(initialPeerIds.map((id) => [id, "connecting"])));
+
+    const handleRemoteEnter = ({ userId }: { userId: string }) => {
+      if (!userId || userId === selfId) return;
+      setConnectionStates((current) => ({ ...current, [userId]: "connected" }));
+      refreshRemoteStream(userId);
+    };
+    const handleRemoteExit = ({ userId }: { userId: string }) => {
+      remoteVideoTypesRef.current[userId]?.clear();
+      setRemoteStreams((current) => {
+        const next = { ...current };
+        delete next[userId];
+        return next;
+      });
+      setConnectionStates((current) => ({ ...current, [userId]: "closed" }));
+    };
+    const handleRemoteAudioAvailable = ({ userId }: { userId: string }) => refreshRemoteStream(userId);
+    const handleRemoteAudioUnavailable = ({ userId }: { userId: string }) => refreshRemoteStream(userId);
+    const handleRemoteVideoAvailable = ({ userId, streamType }: { userId: string; streamType: typeof TRTC.TYPE.STREAM_TYPE_MAIN | typeof TRTC.TYPE.STREAM_TYPE_SUB }) => {
+      void subscribeRemoteVideo(userId, streamType);
+    };
+    const handleRemoteVideoUnavailable = ({ userId, streamType }: { userId: string; streamType: typeof TRTC.TYPE.STREAM_TYPE_MAIN | typeof TRTC.TYPE.STREAM_TYPE_SUB }) => {
+      const activeTypes = remoteVideoTypesRef.current[userId];
+      activeTypes?.delete(streamType);
+      refreshRemoteStream(userId);
+    };
+    const handleScreenShareStopped = () => {
+      setScreenSharing(false);
+      refreshLocalStream();
+    };
+    const handleConnectionStateChanged = ({ state }: { state: string }) => {
+      const mapped: RTCPeerConnectionState | "idle" =
+        /disconnected/i.test(state) ? "disconnected"
+          : /connected/i.test(state) ? "connected"
+          : /connecting|reconnecting/i.test(state) ? "connecting"
+            : /closed/i.test(state) ? "closed"
+              : /fail/i.test(state) ? "failed"
+                : "disconnected";
+      setConnectionStates((current) => {
+        const targetIds = Object.keys(current).length ? Object.keys(current) : initialPeerIds;
+        return Object.fromEntries(targetIds.map((id) => [id, mapped]));
+      });
+    };
+
+    trtc.on(TRTC.EVENT.REMOTE_USER_ENTER, handleRemoteEnter);
+    trtc.on(TRTC.EVENT.REMOTE_USER_EXIT, handleRemoteExit);
+    trtc.on(TRTC.EVENT.REMOTE_AUDIO_AVAILABLE, handleRemoteAudioAvailable);
+    trtc.on(TRTC.EVENT.REMOTE_AUDIO_UNAVAILABLE, handleRemoteAudioUnavailable);
+    trtc.on(TRTC.EVENT.REMOTE_VIDEO_AVAILABLE, handleRemoteVideoAvailable);
+    trtc.on(TRTC.EVENT.REMOTE_VIDEO_UNAVAILABLE, handleRemoteVideoUnavailable);
+    trtc.on(TRTC.EVENT.SCREEN_SHARE_STOPPED, handleScreenShareStopped);
+    trtc.on(TRTC.EVENT.CONNECTION_STATE_CHANGED, handleConnectionStateChanged);
+
+    const join = async () => {
+      try {
+        const token = await fetchTrtcToken(roomId);
+        if (disposed) return;
+        await trtc.enterRoom({
+          sdkAppId: token.sdkAppId,
+          userId: token.userId,
+          userSig: token.userSig,
+          strRoomId: token.strRoomId,
+          scene: TRTC.TYPE.SCENE_RTC,
+          autoReceiveAudio: true,
+          autoReceiveVideo: false,
+          enableAutoPlayDialog: false
+        });
+        joinedRef.current = true;
+        trtc.enableAudioVolumeEvaluation(800, true);
+        setConnectionStates((current) => {
+          const next = { ...current };
+          for (const id of initialPeerIds) {
+            if (!next[id]) next[id] = "connected";
+          }
+          return next;
+        });
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : "腾讯 TRTC 进房失败");
+        setConnectionStates((current) => Object.fromEntries(Object.keys(current).map((id) => [id, "failed"])));
+      }
+    };
+    void join();
+
+    return () => {
+      disposed = true;
+      stopVirtualOutput();
+      rawVideoTrackRef.current?.stop();
+      rawVideoTrackRef.current = null;
+      void (async () => {
+        try {
+          if (joinedRef.current) await trtc.exitRoom();
+        } catch {
+          // ignore cleanup errors
+        } finally {
+          trtc.destroy();
+        }
+      })();
+      trtcRef.current = null;
+      joinedRef.current = false;
+      setLocalStream(null);
+      setRemoteStreams({});
+    };
+  }, [peerIdsKey, refreshLocalStream, refreshRemoteStream, roomId, selfId, stopVirtualOutput, subscribeRemoteVideo]);
+
+  const startCamera = useCallback(async () => {
+    const trtc = trtcRef.current;
+    if (!trtc) {
+      setError("腾讯 TRTC 尚未进入课堂，请稍后再试");
+      return false;
+    }
+    try {
+      setError("");
+      stopVirtualOutput();
+      rawVideoTrackRef.current?.stop();
+      rawVideoTrackRef.current = null;
+      const backgroundUrl = virtualBackgroundRef.current;
+      if (backgroundUrl) {
+        const rawStream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          audio: false
+        });
+        const rawTrack = rawStream.getVideoTracks()[0];
+        if (!rawTrack) throw new Error("未检测到摄像头画面");
+        rawVideoTrackRef.current = rawTrack;
+        const output = await createVirtualBackgroundTrack(rawTrack, backgroundUrl);
+        virtualStopRef.current = output.stop;
+        await trtc.startLocalVideo({ option: { videoTrack: output.track, profile: "720p" } });
+      } else {
+        await trtc.startLocalVideo({ option: { profile: "720p" } });
+      }
+      setCameraOn(true);
+      refreshLocalStream();
+      return true;
+    } catch (reason) {
+      setError(permissionMessage(reason));
+      return false;
+    }
+  }, [refreshLocalStream, stopVirtualOutput]);
+
+  const stopCamera = useCallback(async () => {
+    const trtc = trtcRef.current;
+    if (!trtc) return false;
+    try {
+      await trtc.stopLocalVideo();
+      stopVirtualOutput();
+      rawVideoTrackRef.current?.stop();
+      rawVideoTrackRef.current = null;
+      setCameraOn(false);
+      refreshLocalStream();
+      return false;
+    } catch (reason) {
+      setError(rtcConnectionMessage(reason));
+      return cameraOn;
+    }
+  }, [cameraOn, refreshLocalStream, stopVirtualOutput]);
+
+  const toggleCamera = useCallback(async () => cameraOn ? stopCamera() : startCamera(), [cameraOn, startCamera, stopCamera]);
+
+  const toggleMic = useCallback(async () => {
+    const trtc = trtcRef.current;
+    if (!trtc) {
+      setError("腾讯 TRTC 尚未进入课堂，请稍后再试");
+      return false;
+    }
+    try {
+      setError("");
+      if (micOn) {
+        await trtc.stopLocalAudio();
+        setMicOn(false);
+        refreshLocalStream();
+        return false;
+      }
+      await trtc.startLocalAudio();
+      setMicOn(true);
+      refreshLocalStream();
+      return true;
+    } catch (reason) {
+      setError(permissionMessage(reason));
+      return false;
+    }
+  }, [micOn, refreshLocalStream]);
+
+  const toggleScreenShare = useCallback(async () => {
+    const trtc = trtcRef.current;
+    if (!trtc) {
+      setError("腾讯 TRTC 尚未进入课堂，请稍后再试");
+      return false;
+    }
+    try {
+      setError("");
+      if (screenSharing) {
+        await trtc.stopScreenShare();
+        setScreenSharing(false);
+        refreshLocalStream();
+        return false;
+      }
+      await trtc.startScreenShare({ option: { systemAudio: true } });
+      setScreenSharing(true);
+      refreshLocalStream();
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? `屏幕共享未开启：${reason.message}` : "屏幕共享未开启");
+      return false;
+    }
+  }, [refreshLocalStream, screenSharing]);
+
+  const setVirtualBackground = useCallback(async (imageUrl: string | null) => {
+    virtualBackgroundRef.current = imageUrl;
+    setVirtualBackgroundUrl(imageUrl);
+    if (cameraOn) {
+      await stopCamera();
+      await startCamera();
+    }
+  }, [cameraOn, startCamera, stopCamera]);
+
+  const startRecording = useCallback(async () => {
+    if (recording) return true;
+    if (typeof MediaRecorder === "undefined") {
+      setError("当前浏览器不支持课堂本地录制");
+      return false;
+    }
+    try {
+      if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      const stream = new MediaStream([
+        ...(localStream?.getTracks() ?? []),
+        ...Object.values(remoteStreams).flatMap((streamItem) => streamItem.getTracks())
+      ].filter((track) => track.readyState === "live"));
+      if (!stream.getTracks().length) {
+        setError("当前没有可录制的音视频流，请先开启摄像头、麦克风或屏幕共享");
+        return false;
+      }
+      recordingChunksRef.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus") ? "video/webm;codecs=vp8,opus" : "video/webm" });
+      recorder.ondataavailable = (event) => {
+        if (event.data.size) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: "video/webm" });
+        const url = URL.createObjectURL(blob);
+        recordingUrlRef.current = url;
+        setRecordingUrl(url);
+      };
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setRecording(true);
+      setRecordingUrl(null);
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? `录制启动失败：${reason.message}` : "录制启动失败");
+      return false;
+    }
+  }, [localStream, recording, remoteStreams]);
+
+  const stopRecording = useCallback(async () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return recordingUrlRef.current;
+    return await new Promise<string | null>((resolve) => {
+      const finish = () => {
+        setRecording(false);
+        mediaRecorderRef.current = null;
+        window.setTimeout(() => resolve(recordingUrlRef.current), 0);
+      };
+      recorder.addEventListener("stop", finish, { once: true });
+      recorder.stop();
+    });
+  }, []);
+
+  useEffect(() => () => {
+    stopVirtualOutput();
+    rawVideoTrackRef.current?.stop();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop();
+  }, [stopVirtualOutput]);
+
+  const remoteStream = useMemo(() => {
+    const preferredId = peerIds[0];
+    return (preferredId ? remoteStreams[preferredId] : undefined) ?? Object.values(remoteStreams)[0] ?? null;
+  }, [peerIds, remoteStreams]);
+  const connectionState = useMemo(() => {
+    const preferredId = peerIds[0];
+    return (preferredId ? connectionStates[preferredId] : undefined) ?? Object.values(connectionStates)[0] ?? "idle";
+  }, [connectionStates, peerIds]);
+  const value = useMemo<RTCContextValue>(() => ({
+    cameraOn, micOn, localStream, remoteStream, remoteStreams, connectionState, connectionStates,
+    error, virtualBackgroundUrl, screenSharing, recording, recordingUrl,
+    toggleCamera, toggleMic, setVirtualBackground, toggleScreenShare, startRecording, stopRecording
+  }), [
+    cameraOn, connectionState, connectionStates, error, localStream, micOn, recording, recordingUrl, remoteStream, remoteStreams,
+    screenSharing, setVirtualBackground, startRecording, stopRecording, toggleCamera, toggleMic, toggleScreenShare, virtualBackgroundUrl
+  ]);
+
+  return <RTCContext.Provider value={value}>{children}</RTCContext.Provider>;
+}
+
+export function RTCProvider(props: RTCProviderProps) {
+  return rtcProviderName() === "trtc" ? <TRTCProvider {...props} /> : <WebRTCProvider {...props} />;
 }
 
 export function useRTC() {

@@ -1163,6 +1163,7 @@ function ClassroomPage({ roomId }: { roomId: string }) {
   if (!room) return <div className="loading">正在准备课堂空间…</div>;
   return (
     <RTCProvider
+      roomId={roomId}
       selfId={user.id}
       teacherId={user.id}
       initiator

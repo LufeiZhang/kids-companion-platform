@@ -758,6 +758,7 @@ function StudentClassroom({ roomId }: { roomId: string }) {
   const pomodoroCycleId = pomodoro ? `${pomodoro.status}-${pomodoro.startedAt ?? ""}-${pomodoro.durationSeconds}-${pomodoro.endsAt ?? ""}` : "";
   return (
     <RTCProvider
+      roomId={roomId}
       selfId={user.id}
       teacherId={room.teacherId}
       initiator={false}
